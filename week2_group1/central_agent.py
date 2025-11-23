@@ -1,18 +1,17 @@
 from mango import Agent, sender_addr
-from src.sim_environment.optimization_problem import SchedulingProblem
 from copy import deepcopy
 from pyomo_solver import ED_solve, UC_solve
 import asyncio
-from itertools import compress
 
 from messages import (
     TargetUpdateMsg,        # for receiving target updates
     SetDoneMsg,             # for simulation control flow
-    SetScheduleMsg,         # for setting device schedules
+    # for setting device schedules
     NotifyReadyRequestMsg,  # for simulation control flow
     NotifyReadyMsg,         # for simulation control flow
-    StateRequestMsg,        # ask device for its state
-    StateReplyMsg           # receive device state
+    SetScheduleMsg,
+    # ask device for its state
+    # receive device state
 )
 
 class CentralizedAgent(Agent):
@@ -82,7 +81,8 @@ class CentralizedAgent(Agent):
                 return
 
             # handle this message
-            self.schedule_instant_task(self.handle_target_update(content, meta))
+            self.schedule_instant_task(self.handle_target_update(content, meta)) #todo for redispatch, ED solve needs to be redone and new schedules need to be sent
+
 
     async def handle_target_update(self, content, meta):
         # TODO: implement me
@@ -91,8 +91,12 @@ class CentralizedAgent(Agent):
     #------------------------------------
     #------------------------------------
     async def update_device_schedules(self):
-        # TODO: implement me
         # update device schedules from your local knowledge
+        # devices then give feedback that schedules are updated
+        print("schedule", self.device_schedules)
+        for i in self.n_devices:
+            msg = SetScheduleMsg(self.device_schedules[i])
+            await self.send_message(msg, self.device_addresses[i])
         pass
         
 

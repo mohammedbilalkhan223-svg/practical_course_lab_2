@@ -1,12 +1,10 @@
 from dataclasses import dataclass
 from mango.messages.codecs import json_serializable, JSON
-from typing import Union
-from src.sim_environment.devices.abstract import AbstractState
 
-from src.sim_environment.devices.ideal import *
-from src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState
-from src.sim_environment.devices.hil import IdealLoadState as HILLoadState
-from src.sim_environment.devices.hil import IdealFuelCellState as HILFuelState
+from week2_group1.src.sim_environment.devices.ideal import *
+from week2_group1.src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState
+from week2_group1.src.sim_environment.devices.hil import IdealLoadState as HILLoadState
+from week2_group1.src.sim_environment.devices.hil import IdealFuelCellState as HILFuelState
 
 
 SCENARIO_CODEC = JSON()

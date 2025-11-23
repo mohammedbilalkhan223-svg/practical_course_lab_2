@@ -7,8 +7,8 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 
 from pyomo_solver import ED_solve
-from scenarios.test_scenarios import get_test_scenarios
-from src.sim_environment.devices.ideal import IdealBatteryState, IdealFuelCellState
+from week2_group1.scenarios.test_scenarios import get_test_scenarios
+from week2_group1.src.sim_environment.devices.ideal import IdealBatteryState, IdealFuelCellState
 
 
 # Runtime measurement

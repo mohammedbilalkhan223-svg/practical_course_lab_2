@@ -1,5 +1,5 @@
 from pyomo_solver import ED_solve
-from scenarios.test_scenarios import get_test_scenarios
+from week2_group1.scenarios.test_scenarios import get_test_scenarios
 
 import sys
 from operator import add

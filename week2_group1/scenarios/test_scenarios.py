@@ -1,5 +1,5 @@
-from src.sim_environment.devices.ideal import *
-from src.sim_environment.optimization_problem import *
+from week2_group1.src.sim_environment.devices.ideal import *
+from week2_group1.src.sim_environment.optimization_problem import *
 from copy import deepcopy
 
 def get_test_scenarios():

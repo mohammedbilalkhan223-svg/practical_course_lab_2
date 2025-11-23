@@ -1,27 +1,19 @@
-import logging
 import asyncio
 import random
 import multiprocessing
-from mango import run_with_tcp, AgentAddress, create_tcp_container, activate, custom_topology, per_node
+from mango import AgentAddress, create_tcp_container, activate
 
 import sys
-from src.sim_environment.devices.ideal import *
-from src.agent_setups.HIL_observer import DummyHILObserver as HILObserver
-
-
-from src.sim_environment.optimization_problem import *
+from week2_group1.src.sim_environment.devices.ideal import *
+from week2_group1.src.agent_setups.HIL_observer import DummyHILObserver as HILObserver
 
 # -------------------
 from central_agent import CentralizedAgent
-from src.agent_setups.proxy_agent import ProxyAgent
-from scenarios.test_scenarios import get_test_scenarios
+from week2_group1.src.agent_setups.proxy_agent import ProxyAgent
+from week2_group1.scenarios.test_scenarios import get_test_scenarios
 # -------------------
 
-from messages import SCENARIO_CODEC, SetDoneMsg
-import networkx as nx
-
-import os
-import json
+from messages import SCENARIO_CODEC
 
 # use cmd scenario number if it exists
 SCENARIO_NR = 0
