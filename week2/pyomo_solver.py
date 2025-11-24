@@ -8,6 +8,7 @@ import logging
 import pyomo.environ as pyo
 from copy import deepcopy
 import itertools
+from collections import defaultdict
 
 
 # decide if a device.state object is for a specific kind of device
@@ -318,7 +319,6 @@ def UC_solve(devices, target, c_dev):
     Returns:
         List of booleans indicating whether each device is committed (True) or not (False)
     """
-    option = 1
     n_dev = len(devices)
     best_commitment = None
     device_types = []
@@ -327,7 +327,6 @@ def UC_solve(devices, target, c_dev):
         if p_span == 0:
             return float('inf')
         d.rank_val = d.commitment_cost / p_span + d.c_op
-    devices_sorted = sorted(devices, key=lambda d: d.rank_val)
 
     best_cost = None
     i = None
@@ -335,7 +334,6 @@ def UC_solve(devices, target, c_dev):
     for dev in devices:
         if is_load_state(dev.state):
             type = "load"
-
         elif is_battery_state(dev.state):
             type = "battery"
         elif is_fuel_cell_state(dev.state):
@@ -343,64 +341,113 @@ def UC_solve(devices, target, c_dev):
         else:
             type = "unknown"
         device_types.append((type, dev.rank_val))  # getting list with type and rank value
-    print("device types and cost_value ", device_types)
     counter = 0
+    all_combinations = [list(combi) for combi in itertools.product([False,True], repeat = n_dev)]
+    costs = [cost for _, cost in device_types]
+    type_names = [t for t, _ in device_types]
+    unique_type_names = list(dict.fromkeys(type_names))
+    unique_rows = {}
+    target_pmax = max(target)
+    target_pmin = min(target)
+    for set in all_combinations:
+        total_cost_pu = sum(cost for flag, cost in zip(set, costs) if flag)
+        total_pmax = sum(dev.state.p_max for flag, dev in zip(set, devices) if flag)
+        total_pmin = sum(dev.state.p_min for flag, dev in zip(set, devices) if flag)
+        counts = defaultdict(int)
+        for flag,typ in zip(set, type_names):
+            if flag:
+                counts[typ]+=1
+        amount_vec = tuple(counts[t] for t in unique_type_names) #createss "list" with counter of unique type, here unique load, battery,fuel cell -> 3 entries
+        if amount_vec not in unique_rows:
+            unique_rows[amount_vec] = (set, total_cost_pu, total_pmax, total_pmin, type_names) #filters out same combinations due to symmetry
+        unique_list = list(unique_rows.values())
 
-    if option == 2:
-        templates = []
-        seen = {}
-        all_flags = []
-        for idx, (typ, cost) in enumerate(device_types):
-            key = (typ, cost)
-            if key not in seen:
-                templates.append([typ, cost, [idx]])
-                seen[key] = len(templates) - 1
-            else:
-                templates[seen[key]][2].append(idx)
-        for r in range(1, len(templates) + 1):
-            for combo in itertools.combinations(range(len(templates)), r):
-                flags = [False] * n_dev
+    unique_combinations_sorted = sorted(unique_list, key = lambda x: x[1])
+    print("len(unique_combinations_sorted)", len(unique_combinations_sorted))
 
-                # turn on all devices that belong to the selected templates
-                for tmpl_idx in combo:
-                    for dev_idx in templates[tmpl_idx][2]:
-                        flags[dev_idx] = True
+    feasible_combinations = []
+    for set,cost,pmax,pmin,types in unique_combinations_sorted:
+        diff_max = target_pmax - pmax
+        diff_min = target_pmin - pmin #target_min might be negative, p_min might be negative (in our cases always <=0)
+        if diff_max < 0: #more p providable in combination
+            total_cost_max = target_pmax * cost
+            feasible = True
+        elif diff_max >= 0: #not enough p in combination
+            total_cost_max = pmax * cost + diff_max * c_dev
+            feasible = False
+        if diff_min < 0: #less load in combination than needed
+            total_cost_min = pmin * cost + diff_min * c_dev
+            feasible = False
+        elif diff_min >= 0: #more load in combination than needed
+            total_cost_min = target_pmin * cost
+            feasible = True
+        total_cost = abs(total_cost_max) + abs(total_cost_min)
+        feasible_combinations.append(
+            {
+                "set": set,  # list of booleans – which devices are committed
+                "cost_pu": cost,  # selection cost of this combination
+                "pmax": pmax,
+                "pmin": pmin,
+                "types": types,
+                "diff_max": diff_max,
+                "diff_min": diff_min,
+                "total_cost_max": total_cost_max,
+                "total_cost_min": total_cost_min,
+                "total_cost": total_cost,
+                "feasible": feasible
+            })
+    # now feasibility and not feasible but cheapest ones are selected
+    feasible = [c for c in feasible_combinations if c["feasible"]]
+    infeasible = [c for c in feasible_combinations if not c["feasible"]]
+    if feasible:
+        min_feasible_cost = min(c["total_cost"] for c in feasible)
+    else:
+        min_feasible_cost = float('inf')
+        print("No feasible combination – all infeasible combos will be kept")
+    cheap_infeasible = [c for c in infeasible if c["total_cost"] < min_feasible_cost]
+    feasible_combinations = feasible + cheap_infeasible
+    num_feasible = sum(1 for entry in feasible_combinations if entry["feasible"])
+    num_infeasible = len(feasible_combinations) - num_feasible
+    feasible_combinations = sorted(feasible_combinations, key = lambda x: x["total_cost"])
+    #print("feasible combinations:", feasible_combinations, "length is ", len(feasible_combinations))
 
-                all_flags.append(flags)
-        for flags in all_flags:
-            counter += 1
-            power_schedules, schedule_cost = ED_solve(devices, flags, target, c_dev)
 
-            if best_cost is None or schedule_cost < best_cost:
-                best_cost = schedule_cost
-                best_commitment = flags
-                print(f"New best cost {best_cost} with flags {best_commitment}")
-
-        print("\nFinished – optimal cost:", best_cost)
-        print("counter: ", counter)
-
-    # option 1
-    if option == 1:
-        counter = 0
-        for committed_units in itertools.product([True, False], repeat=n_dev):
-            if not any(committed_units):
-                continue
-
-            # print("Committed units:", committed_units)
-            # call your ED solver
-            power_schedules, schedule_cost = ED_solve(devices, list(committed_units), target, c_dev)
-            counter += 1
-            # print(f"Combination {committed_units}: cost = {schedule_cost}")
-
-            if best_cost is None or schedule_cost <= best_cost:
-                best_cost = schedule_cost
-                best_commitment = list(committed_units)
-                i = 0
-            elif i > 100:
-                # print("there was no improvement within the last 30 iterations")
-                break
-            else:
-                i += 1
-        print("best_cost", best_cost, "with:", best_commitment, "i =, ", i)
-        print("counter", counter)
+    print("----------------checking all unique combinations", len(unique_combinations_sorted))
+    # going through filtered options
+    for option in unique_combinations_sorted:
+        committed_units = option[0]
+        counter += 1
+        power_schedules, schedule_cost = ED_solve(devices, committed_units, target, c_dev)
+        if best_cost is None or schedule_cost < best_cost:
+            best_cost = schedule_cost
+            best_commitment = committed_units
+            counter_best = counter
+            i = 0
+        elif i > 10:
+            print("No improvement within the last 10 iterations")
+            break
+        else:
+            i += 1
+    print("best_cost with unique solutions", best_cost, "with:", best_commitment, "counter was at:", counter_best, "no changes for = ", i, "iterations")
+    print("counter", counter)
+    # going through filtered options
+    print("---------------- checking feasible combinations", len(feasible_combinations), "with ", num_feasible, "feasible combinations and ", num_infeasible, "infeasible combinations")
+    counter = 0
+    best_cost= None
+    for option in feasible_combinations:
+        committed_units = option["set"]
+        counter += 1
+        power_schedules, schedule_cost = ED_solve(devices, committed_units, target, c_dev)
+        if best_cost is None or schedule_cost < best_cost:
+            best_cost = schedule_cost
+            best_commitment = committed_units
+            counter_best = counter
+            i = 0
+        elif i > 8:
+            print("No improvement within the last 9 iterations")
+            break
+        else:
+            i += 1
+    print("best_cost with feasible solutions", best_cost, "with:", best_commitment, "counter was at:", counter_best, "no changes for = ", i, "iterations")
+    print("counter", counter)
     return best_commitment
