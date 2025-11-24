@@ -16,7 +16,7 @@ def main():
         #commited_units = [True, True, False]
         selection_cost = sum(p.devices[d].commitment_cost for d in range(len(p.devices)) if commited_units[d])
         print(f"Selection Cost: {selection_cost}")
-        '''
+
         res = ED_solve(p.devices, commited_units, p.target, p.c_dev)
 
         print(f"Total cost: {res[1]}")
@@ -34,6 +34,6 @@ def main():
 
         print("Diff:")
         diff_schedule = list(map(add, p.target, [-x for x in sum_schedule]))
-        print(diff_schedule)'''
+        print(diff_schedule)
 
 main()
