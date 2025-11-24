@@ -340,7 +340,7 @@ def UC_solve(devices, target, c_dev):
 
     # Create list of device indices sorted by c_sel (lowest first)
     device_indices = list(range(n_dev))
-    device_indices.sort(key=lambda i: devices[i].c_sel)
+    device_indices.sort(key=lambda i: devices[i].c_op)
 
     # Try each device in order, and commit it only if it improves the cost
     for i in device_indices:
@@ -362,5 +362,5 @@ def UC_solve(devices, target, c_dev):
         else:
             # If adding this device increases cost, revert
             committed[i] = False
-
+        print(best_commitment)
     return best_commitment
