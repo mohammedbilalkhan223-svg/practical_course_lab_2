@@ -7,7 +7,7 @@ import copy
 import random
 import numpy as np
 from ..sim_environment.optimization_problem import SchedulingProblem
-from ...messages import TargetUpdateMsg, SetDoneMsg, NotifyReadyRequestMsg, NotifyReadyMsg, SetScheduleMsg, StateRequestMsg, StateReplyMsg, SetScheduleReplyMsg
+from messages import TargetUpdateMsg, SetDoneMsg, NotifyReadyRequestMsg, NotifyReadyMsg, SetScheduleMsg, StateRequestMsg, StateReplyMsg, SetScheduleReplyMsg
 
 import sys
 

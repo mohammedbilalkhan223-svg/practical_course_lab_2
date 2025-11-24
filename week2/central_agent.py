@@ -36,14 +36,15 @@ class CentralizedAgent(Agent):
         self.device_schedules = [[0] * len(target) for i in range(self.n_devices)]
 
         # a quick map of the device address to its corresponding index in the various lists here
-        self.dev_addr_to_id = {
-            addr: i for i, addr in enumerate(device_addresses)
-        }
-
+        self.dev_addr_to_id = {addr: i for i, addr in enumerate(device_addresses)}
+        self.updated_schedules = [[0] * len(target) for i in range(self.n_devices)]
         # various futures objects for control flow
         self.init_schedule_done = asyncio.Future()
+        self.updated_schedule_done = asyncio.Future()
+
         self.dones = [asyncio.Future() for i in range(self.n_devices)]
         self.state_request_fut = asyncio.Future()
+        self._state_reply_futures: dict[str, asyncio.Future] = {}
 
     def on_register(self):
         self.schedule_instant_task(self.create_initial_schedule())
@@ -51,7 +52,7 @@ class CentralizedAgent(Agent):
     # control flow function, do not change
     async def handle_ready_request(self, sender):
         await self.init_schedule_done
-        await self.update_device_schedules()
+        await self.update_device_schedules(sender)
         msg = NotifyReadyMsg()
         await self.send_message(msg, sender)
 
@@ -82,20 +83,53 @@ class CentralizedAgent(Agent):
                 return
 
             # handle this message
-            self.schedule_instant_task(self.handle_target_update(content, meta))
+            self.schedule_instant_task(self.handle_target_update(content))
 
-    async def handle_target_update(self, content, meta):
-        print("handle_target_update", content)
+        if isinstance(content, StateReplyMsg):
+            index = self.dev_addr_to_id[sender]
+            self.devices[index].state = content.state
+            #print("state updated for", self.dev_addr_to_id[sender])
+            fut = self._state_reply_futures.get(sender)
+            if fut and not fut.done():
+                fut.set_result(content.state)
+                #has to be updated before rescheduling
+
+    async def handle_target_update(self, content):
+        target_updated = self.target.copy()
+        self.target[content.t] = content.value
+        if target_updated[content.t]== content.value:
+            print("no changes in update")
+            return
+        else:
+            target_updated[content.t] = content.value
+            remaining_target = target_updated[content.t:]
+            msg = StateRequestMsg()
+            self._state_reply_futures = {addr: asyncio.get_event_loop().create_future() for addr in self.device_addresses}
+
+            for sender in self.device_addresses:
+                await self.send_message(msg, sender)
+            await asyncio.gather(*self._state_reply_futures.values()) #waits until all states are updated
+
+            await self.reschedule(remaining_target, content.t) #start schedule updating
+            await self.updated_schedule_done #updating of schedules is done
+
+            for sender in self.device_addresses: #send the updated schedules to the devices
+                await self.update_device_schedules(sender)
+        self.updated_schedule_done = asyncio.Future()
+        self.state_request_fut = asyncio.Future()
+        self._state_reply_futures: dict[str, asyncio.Future] = {}
+
         pass
 
     #------------------------------------
     #------------------------------------
-    async def update_device_schedules(self):
 
-        print("schedule", self.device_schedules)
-        for i in range(self.n_devices):
-            msg = SetScheduleMsg(self.device_schedules[i])
-            await self.send_message(msg, self.device_addresses[i])
+    async def update_device_schedules(self, sender):
+
+        #print("schedule", self.device_schedules)
+        sender_index = self.device_addresses.index(sender)
+        msg = SetScheduleMsg(self.device_schedules[sender_index])
+        await self.send_message(msg, self.device_addresses[sender_index])
         pass
         
 
@@ -121,5 +155,11 @@ class CentralizedAgent(Agent):
     - [5 + r_5],                t=4
     """
     async def reschedule(self, remaining_target, t):
-        # TODO: implement me
+
+        self.updated_schedule = ED_solve(self.devices, self.committed_units, remaining_target, self.c_dev)[0]
+
+        for i, updated in enumerate(self.updated_schedule):
+            self.device_schedules[i][t:] = updated #replace old values with new values, starting at t
+        self.updated_schedule_done.set_result(True)
+
         pass
