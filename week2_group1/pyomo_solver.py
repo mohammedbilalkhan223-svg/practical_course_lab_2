@@ -1,16 +1,14 @@
 
-from src.sim_environment.devices.ideal import *
+from week2_group1.src.sim_environment.devices.ideal import *
 
-from src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState
-from src.sim_environment.devices.hil import IdealLoadState as HILloadstate
-from src.sim_environment.devices.hil import IdealFuelCellState as HILFuelState
+from week2_group1.src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState
+from week2_group1.src.sim_environment.devices.hil import IdealLoadState as HILloadstate
+from week2_group1.src.sim_environment.devices.hil import IdealFuelCellState as HILFuelState
 
-from src.sim_environment.optimization_problem import SchedulingProblem
 import logging
 import pyomo.environ as pyo
 from copy import deepcopy
-import matplotlib.pyplot as plt
-import numpy as np
+import itertools
 
 # decide if a device.state object is for a specific kind of device
 def is_battery_state(obj):
@@ -63,7 +61,6 @@ def add_problem_constraints(model, devices, committed_units, target, c_dev):
     n_dev = len(devices) #number of devices
 
     # sets
-    #Todo why here for T -1 t_state not and devices also -1 / 0, +1, 0? 
     model.T = pyo.RangeSet(0, n_steps -1)        # power timesteps
     model.T_state = pyo.RangeSet(0, n_steps)      # state timesteps (E/F)
     model.devices = pyo.RangeSet(0, n_dev -1)    # device indices
@@ -158,7 +155,8 @@ def add_objective_function(model):
     """
     Objective: minimize sum_t c_dev * D[t]  +  sum_{i,t} c_op_i * U[i,t]
     """
-    def obj_rule(m):
+
+    def obj_rule(m, co):
         total = 0.0
 
         # deviation cost for deviation between target and optimized value
@@ -169,8 +167,12 @@ def add_objective_function(model):
         for i, dev in enumerate(m._devices):
             for t in m.T:
                 total += dev.c_op * m.U[i, t]
-        return total
 
+        for i, dev in enumerate(m._devices):
+            committed = m._committed[i]
+            if committed:
+                total += dev.commitment_cost
+        return total
     model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
     return model
 
@@ -318,49 +320,91 @@ def UC_solve(devices, target, c_dev):
     Returns:
         List of booleans indicating whether each device is committed (True) or not (False)
     """
+    option =1
     n_dev = len(devices)
-    best_cost = float('inf')
-    best_commitment = [False] * n_dev
+    best_commitment = None
+    device_types = []
+    for d in devices:
+        p_span = d.state.p_max - d.state.p_min
+        if p_span == 0:
+            return float('inf')
+        d.rank_val = d.commitment_cost/p_span + d.c_op
+    devices_sorted = sorted(devices, key=lambda d: d.rank_val)
 
-    # Use a greedy heuristic: try adding devices one by one
-    # Start with no devices committed
-    committed = [False] * n_dev
-    cost = float('inf')
 
-    # Try all possible subsets using a greedy approach
-    # Sort devices by selection cost per unit of power (heuristic to prioritize cheap devices)
-    # But since we don't know the impact, we use a simple greedy: try adding one device at a time
-    # and keep the best configuration
+    best_cost = None
+    i = None
 
-    # We'll try all devices in a greedy order: start with the one that has the lowest c_op + c_sel
-    # But since we don't know the impact, we use a simple iterative improvement
+    for dev in devices:
+        if is_load_state(dev.state):
+            type = "load"
 
-    # Instead, we use a simple greedy: try adding devices one by one in order of increasing c_sel
-    # and keep the best configuration found
-
-    # Create list of device indices sorted by c_sel (lowest first)
-    device_indices = list(range(n_dev))
-    device_indices.sort(key=lambda i: devices[i].c_sel)
-
-    # Try each device in order, and commit it only if it improves the cost
-    for i in device_indices:
-        # Temporarily commit device i
-        committed[i] = True
-
-        # Solve ED with this commitment
-        try:
-            power_schedules, total_cost = ED_solve(devices, committed, target, c_dev)
-        except:
-            # If ED fails (e.g., infeasible), skip this configuration
-            committed[i] = False
-            continue
-
-        # If this configuration is better, keep it
-        if total_cost < best_cost:
-            best_cost = total_cost
-            best_commitment = committed[:]
+        elif is_battery_state(dev.state):
+            type = "battery"
+        elif is_fuel_cell_state(dev.state):
+            type= "fuel_cell"
         else:
-            # If adding this device increases cost, revert
-            committed[i] = False
+            type = "unknown"
+        device_types.append((type, dev.rank_val))#getting list with type and rank value
+    print("device types and cost_value ", device_types)
+    counter = 0
 
+    if option ==2:
+        templates = []
+        seen = {}
+        all_flags =[]
+        for idx, (typ, cost) in enumerate(device_types):
+            key = (typ, cost)
+            if key not in seen:
+                templates.append([typ, cost, [idx]])
+                seen[key] = len(templates) - 1
+            else:
+                templates[seen[key]][2].append(idx)
+        for r in range(1, len(templates) + 1):
+            for combo in itertools.combinations(range(len(templates)), r):
+                flags = [False] * n_dev
+
+                # turn on all devices that belong to the selected templates
+                for tmpl_idx in combo:
+                    for dev_idx in templates[tmpl_idx][2]:
+                        flags[dev_idx] = True
+
+                all_flags.append(flags)
+        for flags in all_flags:
+            counter += 1
+            power_schedules, schedule_cost = ED_solve(devices, flags, target, c_dev)
+
+            if best_cost is None or schedule_cost < best_cost:
+                best_cost = schedule_cost
+                best_commitment = flags
+                print(f"New best cost {best_cost} with flags {best_commitment}")
+
+        print("\nFinished – optimal cost:", best_cost)
+        print("counter: ", counter)
+
+
+    #option 1
+    if option ==1:
+        counter = 0
+        for committed_units in itertools.product([True, False], repeat=n_dev):
+            if not any(committed_units):
+                  continue
+
+            #print("Committed units:", committed_units)
+            # call your ED solver
+            power_schedules, schedule_cost = ED_solve(devices, list(committed_units), target, c_dev)
+            counter += 1
+            #print(f"Combination {committed_units}: cost = {schedule_cost}")
+
+            if best_cost is None or schedule_cost <= best_cost:
+                best_cost = schedule_cost
+                best_commitment = list(committed_units)
+                i=0
+            elif i>100:
+                #print("there was no improvement within the last 30 iterations")
+                break
+            else:
+                i +=1
+        print("best_cost", best_cost, "with:", best_commitment, "i =, ", i)
+        print("counter", counter)
     return best_commitment
