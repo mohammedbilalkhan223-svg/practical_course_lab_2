@@ -133,7 +133,6 @@ def add_device_constraints(model, devices, committed_units):
         state = dev.state
         committed = committed_units[i]
 
-        # todo later non-committed devices: fix powers to specified value and skip all other constraints
         if not committed:
             for t in model.T:
                 model.P[i, t].fix(0.0)
@@ -252,8 +251,9 @@ def add_fuel_cell_state_constraints(model, dev_index, fuel_cell_state):
         # fuel >= 0 is enforced by NonNegativeReals
 
     # ramp from previous power to first step
-    const_list.add(model.P[dev_index, 0] - fuel_cell_state.p_prev <= fuel_cell_state.change_max)
-    const_list.add(fuel_cell_state.p_prev - model.P[dev_index, 0] <= fuel_cell_state.change_max)
+    p_prev = float(fuel_cell_state.p_prev)
+    const_list.add(model.P[dev_index, 0] - p_prev <= fuel_cell_state.change_max)
+    const_list.add(p_prev - model.P[dev_index, 0] <= fuel_cell_state.change_max)
 
     # ramp between consecutive time steps
     if model._n_steps > 1:
@@ -331,8 +331,6 @@ def UC_solve(devices, target, c_dev):
             return float('inf')
         d.rank_val = d.commitment_cost / p_span + d.c_op
 
-
-
     for dev in devices:
         if is_load_state(dev.state):
             type = "load"
@@ -345,6 +343,7 @@ def UC_solve(devices, target, c_dev):
         device_types.append((type, dev.rank_val))  # getting list with type and rank value
 
     all_combinations = [list(combi) for combi in itertools.product([False,True], repeat = n_dev)]
+    all_combinations = [row for row in all_combinations if any(row)]
     costs = [cost for _, cost in device_types]
     type_names = [t for t, _ in device_types]
     unique_type_names = list(dict.fromkeys(type_names))
@@ -423,26 +422,6 @@ def UC_solve(devices, target, c_dev):
     num_infeasible = len(feasible_combinations) - num_feasible
     feasible_combinations = sorted(feasible_combinations, key = lambda x: x["total_cost"]) #sort for total cost to check cheapest ones first
 
-    ''' #for checking all unique combinations, not only ones filtered for feasibility and deviation cost combination
-    print("----------------checking all unique combinations", len(unique_combinations_sorted))
-    # going through filtered options
-    for option in unique_combinations_sorted:
-        committed_units = option["set"]
-        counter += 1
-        power_schedules, schedule_cost = ED_solve(devices, committed_units, target, c_dev)
-        if best_cost is None or schedule_cost < best_cost:
-            best_cost = schedule_cost
-            best_commitment = committed_units
-            counter_best = counter
-            i = 0
-        elif i > 10:
-            print("No improvement within the last 10 iterations")
-            break
-        else:
-            i += 1
-    print("best_cost with unique solutions", best_cost, "with:", best_commitment, "counter was at:", counter_best, "no changes for = ", i, "iterations")
-    print("counter", counter)
-    '''
     # going through filtered options
     print("---------------- checking feasible combinations with total length: ", len(feasible_combinations))
 
@@ -450,7 +429,7 @@ def UC_solve(devices, target, c_dev):
         committed_units = option["set"]
         counter += 1
         power_schedules, schedule_cost = ED_solve(devices, committed_units, target, c_dev)
-        if best_cost is None or schedule_cost < best_cost:
+        if best_cost is None or schedule_cost <= best_cost:
             best_cost = schedule_cost
             best_commitment = committed_units
             counter_best = counter

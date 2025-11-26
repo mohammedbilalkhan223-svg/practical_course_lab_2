@@ -75,6 +75,7 @@ class CentralizedAgent(Agent):
         # You can freely make changes below here
         #-------------------------------
         if isinstance(content, TargetUpdateMsg):
+            print("TargetUpdateMsg")
             # ignore if coming from more than one proxy device
             # workaround for the central agent being transparent to the observer
             # otherwise this message would be received once for each device, making the handling
@@ -87,14 +88,16 @@ class CentralizedAgent(Agent):
 
         if isinstance(content, StateReplyMsg):
             index = self.dev_addr_to_id[sender]
+            #print("old", self.devices[index].state )
             self.devices[index].state = content.state
-            #print("state updated for", self.dev_addr_to_id[sender])
+            #print("new", self.devices[index].state )
             fut = self._state_reply_futures.get(sender)
             if fut and not fut.done():
                 fut.set_result(content.state)
                 #has to be updated before rescheduling
 
     async def handle_target_update(self, content):
+        print("handle_target_update")
         target_updated = self.target.copy()
         self.target[content.t] = content.value
         if target_updated[content.t]== content.value:
@@ -103,18 +106,19 @@ class CentralizedAgent(Agent):
         else:
             target_updated[content.t] = content.value
             remaining_target = target_updated[content.t:]
+            print("sending staterequest message ")
             msg = StateRequestMsg()
             self._state_reply_futures = {addr: asyncio.get_event_loop().create_future() for addr in self.device_addresses}
-
             for sender in self.device_addresses:
                 await self.send_message(msg, sender)
             await asyncio.gather(*self._state_reply_futures.values()) #waits until all states are updated
-
+            print("gathered all state reply futures")
             await self.reschedule(remaining_target, content.t) #start schedule updating
-            await self.updated_schedule_done #updating of schedules is done
-
+            print("rescheduling done")
             for sender in self.device_addresses: #send the updated schedules to the devices
                 await self.update_device_schedules(sender)
+            print("updated schedules done")
+            await self.updated_schedule_done #updating of schedules is done
         self.updated_schedule_done = asyncio.Future()
         self.state_request_fut = asyncio.Future()
         self._state_reply_futures: dict[str, asyncio.Future] = {}
@@ -129,6 +133,7 @@ class CentralizedAgent(Agent):
         #print("schedule", self.device_schedules)
         sender_index = self.device_addresses.index(sender)
         msg = SetScheduleMsg(self.device_schedules[sender_index])
+        #print("msg", msg)
         await self.send_message(msg, self.device_addresses[sender_index])
         pass
         
@@ -141,23 +146,10 @@ class CentralizedAgent(Agent):
         self.device_schedules = ED_solve(self.devices, self.committed_units, self.target, self.c_dev)[0]
         self.init_schedule_done.set_result(True)
 
-    """
-    Implement your rescheduling logic for the agent here.
 
-    Input:
-    - <remaining_target> - the updated schedule with the steps already executed being removed.
-
-    i.e. if the initial schedule was [1, 2, 3, 4, 5], then this function will be called with:
-    - [1 + r_1, 2, 3, 4, 5],    t=0
-    - [2 + r_2, 3, 4, 5],       t=1
-    - [3 + r_3, 4, 5],          t=2
-    - [4 + r_4, 5],             t=3
-    - [5 + r_5],                t=4
-    """
     async def reschedule(self, remaining_target, t):
-
+        print("rescheduling")
         self.updated_schedule = ED_solve(self.devices, self.committed_units, remaining_target, self.c_dev)[0]
-
         for i, updated in enumerate(self.updated_schedule):
             self.device_schedules[i][t:] = updated #replace old values with new values, starting at t
         self.updated_schedule_done.set_result(True)
