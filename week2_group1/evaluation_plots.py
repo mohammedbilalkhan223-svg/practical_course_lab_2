@@ -7,8 +7,8 @@ from copy import deepcopy
 import matplotlib.pyplot as plt
 
 from pyomo_solver import ED_solve
-from week2_group1.scenarios.test_scenarios import get_test_scenarios
-from week2_group1.src.sim_environment.devices.ideal import IdealBatteryState, IdealFuelCellState
+from scenarios.test_scenarios import get_test_scenarios
+from src.sim_environment.devices.ideal import IdealBatteryState, IdealFuelCellState
 
 
 # Runtime measurement
@@ -146,3 +146,4 @@ def plot_and_save_all_scenarios(output_dir="plots"):
 if __name__ == "__main__":
     benchmark_baseline_scenarios()
     plot_and_save_all_scenarios("plots")
+    

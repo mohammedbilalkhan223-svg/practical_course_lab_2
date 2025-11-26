@@ -1,4 +1,4 @@
-from week2_group1.src.sim_environment.devices.abstract import AbstractDevice, AbstractState
+from src.sim_environment.devices.abstract import AbstractDevice, AbstractState
 import logging
 
 
