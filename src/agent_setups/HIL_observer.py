@@ -1,18 +1,20 @@
-from dataclasses import dataclass
-from typing import Dict
 from mango import Agent, sender_addr
-from mango.messages.codecs import json_serializable
 import asyncio
 import copy
 import random
 import numpy as np
-from ..sim_environment.optimization_problem import SchedulingProblem
-from messages import TargetUpdateMsg, SetDoneMsg, NotifyReadyRequestMsg, NotifyReadyMsg, SetScheduleMsg, StateRequestMsg, StateReplyMsg, SetScheduleReplyMsg
+from messages import (
+    TargetUpdateMsg,
+    SetDoneMsg,
+    NotifyReadyRequestMsg,
+    NotifyReadyMsg,
+    SetScheduleMsg,
+    StateRequestMsg,
+    StateReplyMsg,
+    SetScheduleReplyMsg
+)
 
-import sys
-
-from ..sim_environment.devices.ideal import *
-import logging
+from src.sim_environment.devices.ideal import *
 
 
 class DummyHILObserver(Agent):
@@ -63,6 +65,7 @@ class DummyHILObserver(Agent):
         # set things in our local device
         # --------------------------------------------------
         if isinstance(content, SetScheduleMsg):
+            print("I received a schedule", content)
             self.schedule_instant_task(self.handle_set_schedule_msg(content, sender))
             return
 
@@ -144,6 +147,7 @@ class DummyHILObserver(Agent):
 
     async def wait_for_agents_ready(self):
         for addr in self.controller_addresses:
+            print("ready", addr)
             msg = NotifyReadyRequestMsg()
             await self.send_message(msg, addr)
 

@@ -1,15 +1,11 @@
-import logging
 import asyncio
 import random
 import multiprocessing
-from mango import run_with_tcp, AgentAddress, create_tcp_container, activate, custom_topology, per_node
+from mango import AgentAddress, create_tcp_container, activate
 
 import sys
 from src.sim_environment.devices.ideal import *
 from src.agent_setups.HIL_observer import DummyHILObserver as HILObserver
-
-
-from src.sim_environment.optimization_problem import *
 
 # -------------------
 from central_agent import CentralizedAgent
@@ -17,14 +13,10 @@ from src.agent_setups.proxy_agent import ProxyAgent
 from scenarios.test_scenarios import get_test_scenarios
 # -------------------
 
-from messages import SCENARIO_CODEC, SetDoneMsg
-import networkx as nx
-
-import os
-import json
+from messages import SCENARIO_CODEC
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 6
+SCENARIO_NR = 1
 RNG_SEED = 0
 if len(sys.argv) > 1:
     SCENARIO_NR = int(sys.argv[1])
@@ -121,14 +113,15 @@ async def run_observer(step_time_s, problem):
 
 def plot_results(obs):
     import matplotlib.pyplot as plt
+
     devices, device_powers = obs.get_devices_and_powers()
     total_power, device_cost_list, schedule_cost_list, cumulative_cost = (
         obs.final_problem.get_cumulative_by_timestep(device_powers)
     )
 
     x = list(range(len(total_power)))
+    plt.plot(x, obs.final_problem.target, label = "target power")
     plt.plot(x, total_power, label ="total power")
-    plt.plot(x, obs.final_problem.target, label = "target power", linestyle = "--")
     plt.plot(x,  device_cost_list, label = "device costs")
     plt.plot(x, schedule_cost_list, label = "target costs")
     plt.plot(x, cumulative_cost, label = "total costs")
@@ -137,8 +130,6 @@ def plot_results(obs):
 
     plt.cla()
     plt.plot(x, obs.final_problem.target, label = "target power")
-    plt.plot(x, total_power, label ="total power", linestyle = "--")
-
     print(f"target: {obs.final_problem.target}")
     for i, schedule in enumerate(device_powers):
         added_string = ""
