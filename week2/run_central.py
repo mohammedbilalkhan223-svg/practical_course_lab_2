@@ -24,7 +24,7 @@ import os
 import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 6
+SCENARIO_NR = 1
 RNG_SEED = 0
 if len(sys.argv) > 1:
     SCENARIO_NR = int(sys.argv[1])
@@ -45,8 +45,8 @@ def get_scenario():
     #---------------------------------------
 
 HOST = "127.0.0.1"
-OBS_PORT = 5555
-CON_PORT = 5557
+OBS_PORT = 5556
+CON_PORT = 5558
 
 OBS_NAME = "Observer"
 OBS_ADDR = AgentAddress((HOST, OBS_PORT), OBS_NAME)
