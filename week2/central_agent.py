@@ -75,7 +75,6 @@ class CentralizedAgent(Agent):
         # You can freely make changes below here
         #-------------------------------
         if isinstance(content, TargetUpdateMsg):
-            print("TargetUpdateMsg")
             # ignore if coming from more than one proxy device
             # workaround for the central agent being transparent to the observer
             # otherwise this message would be received once for each device, making the handling
@@ -88,9 +87,7 @@ class CentralizedAgent(Agent):
 
         if isinstance(content, StateReplyMsg):
             index = self.dev_addr_to_id[sender]
-            #print("old", self.devices[index].state )
             self.devices[index].state = content.state
-            #print("new", self.devices[index].state )
             fut = self._state_reply_futures.get(sender)
             if fut and not fut.done():
                 fut.set_result(content.state)
@@ -106,15 +103,12 @@ class CentralizedAgent(Agent):
         else:
             target_updated[content.t] = content.value
             remaining_target = target_updated[content.t:]
-            print("sending staterequest message ")
             msg = StateRequestMsg()
             self._state_reply_futures = {addr: asyncio.get_event_loop().create_future() for addr in self.device_addresses}
             for sender in self.device_addresses:
                 await self.send_message(msg, sender)
             await asyncio.gather(*self._state_reply_futures.values()) #waits until all states are updated
-            print("gathered all state reply futures")
             await self.reschedule(remaining_target, content.t) #start schedule updating
-            print("rescheduling done")
             for sender in self.device_addresses: #send the updated schedules to the devices
                 await self.update_device_schedules(sender)
             print("updated schedules done")
@@ -130,10 +124,8 @@ class CentralizedAgent(Agent):
 
     async def update_device_schedules(self, sender):
 
-        #print("schedule", self.device_schedules)
         sender_index = self.device_addresses.index(sender)
         msg = SetScheduleMsg(self.device_schedules[sender_index])
-        #print("msg", msg)
         await self.send_message(msg, self.device_addresses[sender_index])
         pass
         
@@ -153,7 +145,6 @@ class CentralizedAgent(Agent):
         self.updated_schedule = ED_solve(self.devices, self.committed_units, remaining_target, self.c_dev)[0]
         for i, updated in enumerate(self.updated_schedule):
             self.device_schedules[i][t:] = updated #replace old values with new values, starting at t
-            print("length updated", len(updated), "length schedule", len(self.device_schedules[i]))
         self.updated_schedule_done.set_result(True)
 
         pass
