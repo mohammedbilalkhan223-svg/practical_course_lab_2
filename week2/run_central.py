@@ -25,7 +25,7 @@ import json
 
 # use cmd scenario number if it exists
 SCENARIO_NR = 1
-RNG_SEED = 1
+RNG_SEED = 0
 if len(sys.argv) > 1:
     SCENARIO_NR = int(sys.argv[1])
 

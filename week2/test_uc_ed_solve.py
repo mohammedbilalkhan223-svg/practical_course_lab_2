@@ -1,4 +1,4 @@
-from pyomo_solver import ED_solve, UC_solve
+from pyomo_solver_old import ED_solve, UC_solve
 from scenarios.test_scenarios import get_test_scenarios
 
 import sys

@@ -44,46 +44,51 @@ def get_pyomo_model(devices, committed_units, target, c_dev):
 
     # store meta info on the model
     model._devices = devices
-    model._committed_units = committed_units
-    model._target = list(target) #list of target values
-    model._c_dev = float(c_dev) # deviation cost
-    model._n_steps = len(target) #-> number of timesteps
-    model._n_devices = len(devices) #->device amount
-
-    # sets
-    model.T = pyo.RangeSet(0, model._n_steps - 1)  # power timesteps
-    model.T_state = pyo.RangeSet(0, model._n_steps)  # state timesteps (for E, to enable cyclic behavior)
-    model.devices_idx = pyo.RangeSet(0, model._n_devices - 1)  # device indices 0 to n-1 (total of n devices)
-
-    # classify devices by type
-    load_idx = [i for i, d in enumerate(devices) if is_load_state(d.state)]
-    batt_idx = [i for i, d in enumerate(devices) if is_battery_state(d.state)]
-    fuel_idx = [i for i, d in enumerate(devices) if is_fuel_cell_state(d.state)]
-    model.loads = pyo.Set(initialize=load_idx)
-    model.batteries = pyo.Set(initialize=batt_idx)
-    model.fuelcells = pyo.Set(initialize=fuel_idx)
+    model._committed = committed_units
+    model._target = target
+    model._c_dev = c_dev
+    model._n_steps = len(target)
+    model._n_dev = len(devices)
 
     # add constraints that exist independent of the chosen devices
-    model = add_problem_constraints(model, batt_idx, fuel_idx)
+    model = add_problem_constraints(model, devices, committed_units, target, c_dev)
+
     # add device specific constraints
-    model = add_device_constraints(model)
+    model = add_device_constraints(model, devices, committed_units)
+
     # add objective function
     model = add_objective_function(model)
 
     return model
 
 
-def add_problem_constraints(model, batt_idx, fuel_idx):
+def add_problem_constraints(model, devices, committed_units, target, c_dev):
+    n_steps = len(target)  # number of timesteps
+    n_dev = len(devices)  # number of devices
+
+    # sets
+    model.T = pyo.RangeSet(0, n_steps - 1)  # power timesteps
+    model.T_state = pyo.RangeSet(0, n_steps)  # state timesteps (E/F)
+    model.devices = pyo.RangeSet(0, n_dev - 1)  # device indices
+
+    # classify devices by type
+    load_idx = [i for i, d in enumerate(devices) if is_load_state(d.state)]
+    batt_idx = [i for i, d in enumerate(devices) if is_battery_state(d.state)]
+    fuel_idx = [i for i, d in enumerate(devices) if is_fuel_cell_state(d.state)]
+
+    model.loads = pyo.Set(initialize=load_idx)
+    model.batteries = pyo.Set(initialize=batt_idx)
+    model.fuelcells = pyo.Set(initialize=fuel_idx)
 
     # variables
     # P[i,t] Power to be optimizes (positive and/or negative depending on device)
-    model.P = pyo.Var(model.devices_idx, model.T, domain=pyo.Reals)
+    model.P = pyo.Var(model.devices, model.T, domain=pyo.Reals)
 
-    # absP[i,t] absolute value of P to calculate operating costs in cost function
-    model.Pabs = pyo.Var(model.devices_idx, model.T, domain=pyo.NonNegativeReals)
+    # U[i,t] absolute value of P to calculate operating costs in cost function
+    model.U = pyo.Var(model.devices, model.T, domain=pyo.NonNegativeReals)
 
-    # PDelta[t] deviation between target and optimized power
-    model.PDelta = pyo.Var(model.T, domain=pyo.NonNegativeReals)
+    # D[t] deviation between target and optimized value
+    model.D = pyo.Var(model.T, domain=pyo.NonNegativeReals)
 
     # battery energies E[b,t]
     if batt_idx:
@@ -95,37 +100,42 @@ def add_problem_constraints(model, batt_idx, fuel_idx):
         model.F = pyo.Var(model.fuelcells, model.T_state,
                           domain=pyo.NonNegativeReals)
 
-    # absolute value of operating cost (due to lineraization)
-    def Pabs_upper_rule(m, i, t):
-        return m.Pabs[i, t] >= m.P[i, t]
+    # absolute value of deviation between target and total power at timestep
+    def dev_upper_rule(m, t):
+        total_p = sum(m.P[i, t] for i in m.devices)
+        return m.D[t] >= m._target[t] - total_p
 
-    def Pabs_lower_rule(m, i, t):
-        return m.Pabs[i, t] >= -m.P[i, t]
-    model.Pabs_upper = pyo.Constraint(model.devices_idx, model.T, rule=Pabs_upper_rule)
-    model.Pabs_lower = pyo.Constraint(model.devices_idx, model.T, rule=Pabs_lower_rule)
+    def dev_lower_rule(m, t):
+        total_p = sum(m.P[i, t] for i in m.devices)
+        return m.D[t] >= -(m._target[t] - total_p)
 
-    # absolute value of deviation between target and total power at timestep (due to lineraization)
-    def Pdelta_upper_rule(m, t):
-        return m.PDelta[t] >= m._target[t] - sum(m.P[i, t] for i in m.devices_idx)
+    model.dev_upper = pyo.Constraint(model.T, rule=dev_upper_rule)
+    model.dev_lower = pyo.Constraint(model.T, rule=dev_lower_rule)
 
-    def Pdelta_lower_rule(m, t):
-        return m.PDelta[t] >= -(m._target[t] - sum(m.P[i, t] for i in m.devices_idx))
-    model.Pdelta_upper = pyo.Constraint(model.T, rule=Pdelta_upper_rule)
-    model.Pdelta_lower = pyo.Constraint(model.T, rule=Pdelta_lower_rule)
+    # absolute value of operating cost
+    def u_upper_rule(m, i, t):
+        return m.U[i, t] >= m.P[i, t]
+
+    def u_lower_rule(m, i, t):
+        return m.U[i, t] >= -m.P[i, t]
+
+    model.u_upper = pyo.Constraint(model.devices, model.T, rule=u_upper_rule)
+    model.u_lower = pyo.Constraint(model.devices, model.T, rule=u_lower_rule)
+
     return model
 
 
-def add_device_constraints(model):
+def add_device_constraints(model, devices, committed_units):
     # constraint lists per device
     model.device_constraints = pyo.ConstraintList()
 
-    for i, dev in enumerate(model._devices):
+    for i, dev in enumerate(devices):
         state = dev.state
-        committed = model._committed_units[i]
+        committed = committed_units[i]
 
         if not committed:
             for t in model.T:
-                model.device_constraints.add(model.P[i, t] == 0.0) #setting not commited device constraint so that P = 0 for not commited devices
+                model.P[i, t].fix(0.0)
             continue
 
         # add constraints depending on device type
@@ -145,31 +155,43 @@ def add_objective_function(model):
     """
     Objective: minimize sum_t c_dev * D[t]  +  sum_{i,t} c_op_i * U[i,t]
     """
-    def obj_rule(m):
+
+    def obj_rule(m, co):
         total = 0.0
+
+        # deviation cost for deviation between target and optimized value
         for t in m.T:
-            total += m._c_dev * m.PDelta[t] # deviation cost for deviation between target and optimized value
+            total += m._c_dev * m.D[t]
+
+        # operating cost (device specific), going through devices and summing over time
         for i, dev in enumerate(m._devices):
             for t in m.T:
-                total += dev.c_op * m.Pabs[i, t] # operating cost (device specific), going through devices and summing over time
+                total += dev.c_op * m.U[i, t]
+
         for i, dev in enumerate(m._devices):
-            committed = m._committed_units[i]
+            committed = m._committed[i]
             if committed:
-                total += dev.commitment_cost #commitment cost for commited units
+                total += dev.commitment_cost
         return total
+
     model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
     return model
 
 
-def add_load_state_constraints(model, device_index, load_state):
+def add_load_state_constraints(model, dev_index, load_state):
     """
     IdealLoadState:
     - p_min <= P(i,t) <= p_max (with p_max usually = 0)
     """
-    for t in model.T:
-        model.device_constraints.add(pyo.inequality(float(load_state.p_min), model.P[device_index, t], float(load_state.p_max)))
+    const_list = pyo.ConstraintList()
+    setattr(model, const_list_name(dev_index), const_list)
 
-def add_battery_state_constraints(model, device_index, battery_state):
+    for t in model.T:
+        const_list.add(model.P[dev_index, t] >= load_state.p_min)
+        const_list.add(model.P[dev_index, t] <= load_state.p_max)
+
+
+def add_battery_state_constraints(model, dev_index, battery_state):
     """
     IdealBatteryState:
     - P_min <= P(i,t) <= P_max
@@ -177,21 +199,31 @@ def add_battery_state_constraints(model, device_index, battery_state):
     - E(i,T) = size * final_soc
     - 0 <= E(i,t) <= size
     - E(i,t+1) = E(i,t) - P(i,t)
-    - E(i,T+1) = E(t=0)
+    - E(i,t+1) = E(t=0)
     """
+    const_list = pyo.ConstraintList()
+    setattr(model, const_list_name(dev_index), const_list)
 
-    for t in model.T:
-        model.device_constraints.add(pyo.inequality(float(battery_state.p_min), model.P[device_index, t], float(battery_state.p_max))) #Power bounds
+    # initial energy
+    const_list.add(model.E[dev_index, 0] == battery_state.size * battery_state.soc)
 
-    model.device_constraints.add(model.E[device_index, 0] == float(battery_state.size) * float(battery_state.soc)) # initial energy
-    model.device_constraints.add(model.E[device_index, model._n_steps] == float(battery_state.size) * float(battery_state.final_soc))    # final energy (SOC constraint), last value of E is initial value (cyclic behaviour of battery)
+    # final energy (SOC constraint)
+    const_list.add(model.E[dev_index, model._n_steps] == battery_state.size * battery_state.final_soc)
+
+    # energy bounds
     for t in model.T_state:
-        model.device_constraints.add(model.E[device_index, t] <= float(battery_state.size)) # energy bounds
+        const_list.add(model.E[dev_index, t] <= battery_state.size)
         # lower bound 0 is enforced by NonNegativeReals domain
-    for t in range(model._n_steps):
-        model.device_constraints.add(model.E[device_index, t+1] == model.E[device_index, t] - model.P[device_index, t]) # E in next timestep is E current ts - used power in ts
+    const_list.add(model.E[dev_index, model.T[-1] + 1] == model.E[dev_index, 0])
 
-def add_fuel_cell_state_constraints(model, device_index, fuel_cell_state):
+    # dynamics + power limits
+    for t in model.T:
+        const_list.add(model.E[dev_index, t + 1] == model.E[dev_index, t] - model.P[dev_index, t])
+        const_list.add(model.P[dev_index, t] >= battery_state.p_min)
+        const_list.add(model.P[dev_index, t] <= battery_state.p_max)
+
+
+def add_fuel_cell_state_constraints(model, dev_index, fuel_cell_state):
     """
     IdealfuelcellState:
     - 0 <= P(i,t) <= p_max
@@ -201,22 +233,37 @@ def add_fuel_cell_state_constraints(model, device_index, fuel_cell_state):
     - ramp: |P(i,t+1) - P(i,t)| <= change_max
             |P(i,0) - p_prev| <= change_max
     """
+    const_list = pyo.ConstraintList()
+    setattr(model, const_list_name(dev_index), const_list)
 
-    for t in model.T:
-        model.device_constraints.add(pyo.inequality(float(fuel_cell_state.p_min), model.P[device_index, t], float(fuel_cell_state.p_max))) #adding power bounds
-    model.device_constraints.add(model.F[device_index, 0] == float(fuel_cell_state.fuel_amount)) # initial fuel
+    # initial fuel
+    const_list.add(model.F[dev_index, 0] == fuel_cell_state.fuel_amount)
+
     # dynamics and power bounds
-    for t in range(model._n_steps):
+    for t in model.T:
         # fuel evolution
-        model.device_constraints.add(model.F[device_index, t + 1] == model.F[device_index, t] - model.P[device_index, t]) #Fuel amount in next ts is current fuel amount minus Power used in ts
+        const_list.add(
+            model.F[dev_index, t + 1] == model.F[dev_index, t] - model.P[dev_index, t]
+        )
+        # power limits
+        const_list.add(model.P[dev_index, t] >= fuel_cell_state.p_min)
+        const_list.add(model.P[dev_index, t] <= fuel_cell_state.p_max)
         # fuel >= 0 is enforced by NonNegativeReals
 
-    model.device_constraints.add(model.P[device_index, 0] - float(fuel_cell_state.p_prev) <= float(fuel_cell_state.change_max)) # ramp from previous power to first step in absolute value
-    model.device_constraints.add(-(model.P[device_index, 0] - float(fuel_cell_state.p_prev)) <= float(fuel_cell_state.change_max)) #'''
-    if model._n_steps > 1: # ramp between consecutive time steps
+    # ramp from previous power to first step
+    p_prev = float(fuel_cell_state.p_prev)
+    const_list.add(model.P[dev_index, 0] - p_prev <= fuel_cell_state.change_max)
+    const_list.add(p_prev - model.P[dev_index, 0] <= fuel_cell_state.change_max)
+
+    # ramp between consecutive time steps
+    if model._n_steps > 1:
         for t in range(0, model._n_steps - 1):
-            model.device_constraints.add(model.P[device_index, t + 1] - model.P[device_index, t] <= float(fuel_cell_state.change_max))
-            model.device_constraints.add( model.P[device_index, t] - model.P[device_index, t + 1] <= float(fuel_cell_state.change_max))
+            const_list.add(
+                model.P[dev_index, t + 1] - model.P[dev_index, t] <= fuel_cell_state.change_max
+            )
+            const_list.add(
+                model.P[dev_index, t] - model.P[dev_index, t + 1] <= fuel_cell_state.change_max
+            )
 
 
 def ED_solve(devices, committed_units, target, c_dev):

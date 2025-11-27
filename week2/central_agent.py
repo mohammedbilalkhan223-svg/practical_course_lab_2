@@ -143,6 +143,7 @@ class CentralizedAgent(Agent):
     """
     async def create_initial_schedule(self):
         self.committed_units = UC_solve(self.devices, self.target, self.c_dev)
+        #self.committed_units = [True for _ in range(self.n_devices)]
         self.device_schedules = ED_solve(self.devices, self.committed_units, self.target, self.c_dev)[0]
         self.init_schedule_done.set_result(True)
 
@@ -152,6 +153,7 @@ class CentralizedAgent(Agent):
         self.updated_schedule = ED_solve(self.devices, self.committed_units, remaining_target, self.c_dev)[0]
         for i, updated in enumerate(self.updated_schedule):
             self.device_schedules[i][t:] = updated #replace old values with new values, starting at t
+            print("length updated", len(updated), "length schedule", len(self.device_schedules[i]))
         self.updated_schedule_done.set_result(True)
 
         pass
