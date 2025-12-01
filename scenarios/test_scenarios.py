@@ -1,36 +1,63 @@
 from src.sim_environment.devices.ideal import *
+# Imports all device-related classes (IdealDevice, IdealBatteryState, etc.) from the ideal device module
 from src.sim_environment.optimization_problem import *
+# Imports SchedulingProblem and cost functions.
 from copy import deepcopy
-
+# Imports deepcopy to fully copy objects so changes do not affect the originals.
 def get_test_scenarios():
+# Defines a function that creates and returns a list of predefined test scenarios.
     #-----------------------------------
     # Scenario 0: nothing complicated, no randomization
     #-----------------------------------
     c_load = 0.5
     c_other = 0.7
+# Sets cost coefficients for load devices and other devices.
     target = [30, 20, 10, 0, -10, -20, -30, -40, -50, 0]
+# Target power schedule for 10 timesteps.
     c_dev = 5
     max_rel_rand = 0.0
+# Deviation cost = 5 per unit.
+# No randomization allowed.
     l = IdealDevice(IdealLoadState(-30), c_load)
+# Creates one load device with maximum consumption of –30.
     b = IdealDevice(IdealBatteryState(100, 0.5, -20, 20), c_other)
+# Creates a battery with:
+# 100 kWh capacity,
+# SOC = 0.5,
+# charge power down to –20, discharge up to +20.
     f = IdealDevice(IdealFuelCellState(100, 20, 10), c_other)
+# Creates a fuel cell with:
+# 100 fuel units,
+# max output 20,
+# max change per timestep 10.
     devices = [l, b, f]
+# List of devices in scenario 0.
     p0 = deepcopy(SchedulingProblem(target, devices, c_dev, max_rel_rand))
-
+# Creates a SchedulingProblem and deep-copies it to avoid later mutation.
     #-----------------------------------
     # Scenario 1: double device size and some randomization
     #-----------------------------------
     c_load = 0.5
     c_other = 0.7
+# Reset cost parameters.
     target = [0.9 * x for x in [60, 40, 20, 0, -20, -40, -60, -80, -100, 0, 0, 0, 0]]
+# Target schedule scaled by 0.9 over 13 timesteps.
     c_dev = 10
     max_rel_rand = 0.1
+# Higher deviation cost and 10% randomization.
     l = IdealDevice(IdealLoadState(-30), c_load)
+# Same load as before.
     b = IdealDevice(IdealBatteryState(200, 0.5, -30, 30), c_other)
+# Battery with double capacity and larger power limits.
     f = IdealDevice(IdealFuelCellState(100, 30, 5), c_other)
+# Fuel cell with:
+# 100 fuel,
+# 30 max power,
+# small ramp rate limit of 5.
     devices = [l, deepcopy(l),  b, deepcopy(b), f, deepcopy(f)]
+# Duplicates each device type once: two loads, two batteries, two fuel cells.
     p1 = deepcopy(SchedulingProblem(target, devices, c_dev, max_rel_rand))
-
+# Create the scenario.
     #-----------------------------------
     # Scenario 2: same devices as scenario 1 but longer schedule
     #-----------------------------------
