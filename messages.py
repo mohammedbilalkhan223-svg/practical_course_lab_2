@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from mango.messages.codecs import json_serializable, JSON
+from typing import Union
+from src.sim_environment.devices.abstract import AbstractState
 
 from src.sim_environment.devices.ideal import *
 from src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState

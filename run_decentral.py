@@ -1,23 +1,28 @@
+import logging
 import asyncio
 import random
 import multiprocessing
-from mango import AgentAddress, create_tcp_container, activate
+from mango import run_with_tcp, AgentAddress, create_tcp_container, activate, custom_topology, per_node
 
 import sys
 from src.sim_environment.devices.ideal import *
 from src.agent_setups.HIL_observer import DummyHILObserver as HILObserver
+from src.sim_environment.optimization_problem import *
 
 # -------------------
-from central_agent import CentralizedAgent
-from src.agent_setups.proxy_agent import ProxyAgent
-from scenarios.test_scenarios import get_test_scenarios
+from decentral_agent import DecentralAgent
+from scenarios.decentral_scenarios import get_test_scenarios
+from messages import SCENARIO_CODEC, SetDoneMsg
 # -------------------
 
-from messages import SCENARIO_CODEC
+import networkx as nx
+import os
+import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 1
+SCENARIO_NR = 0
 RNG_SEED = 0
+STEP_TIME_S = 0.2
 if len(sys.argv) > 1:
     SCENARIO_NR = int(sys.argv[1])
 
@@ -30,10 +35,9 @@ if len(sys.argv) > 2:
 def get_scenario():
     #---------------------------------------
     # step_time_s, _, problem, _, _, _  = get_hil_scenarios()[SCENARIO_NR]
-    step_time_s = 0.2
-    problem = get_test_scenarios()[SCENARIO_NR]
+    problem, topology = get_test_scenarios()[SCENARIO_NR]
 
-    return step_time_s, problem
+    return STEP_TIME_S, problem, topology
     #---------------------------------------
 
 HOST = "127.0.0.1"
@@ -46,65 +50,43 @@ OBS_ADDR = AgentAddress((HOST, OBS_PORT), OBS_NAME)
 def con_name(i):
     return f"con_{i}"
 
-
 def con_addr(i):
     return AgentAddress((HOST, CON_PORT), con_name(i))
 
 
 async def main():
     random.seed(1)
-    step_time_s, problem = get_scenario()    
-
-    c_proc = make_controllers_process()
-    c_proc.start()
-
-    await run_observer(step_time_s, problem)
-
-    # kill in case join does not work for some reason
-    # to ensure termination
-    c_proc.join(timeout=1)
-    c_proc.kill()
-
+    step_time_s, problem, topology = get_scenario()    
+    await run_containers(step_time_s, problem, topology)
     print("done")
 
-def make_controllers_process():
-    process = multiprocessing.Process(target=run_controllers)
-    return process
+async def run_containers(step_time_s, problem, topology):
+    devices = problem.devices
+    n_agents = len(devices)
 
-
-def run_controllers():
-    async def controller_main():
-        step_time_s, problem = get_scenario()
-        devices = problem.devices
-        n_agents = len(devices)
-        container = create_tcp_container(addr=(HOST, CON_PORT), codec=SCENARIO_CODEC)
-
-        device_addresses = [AgentAddress((HOST, CON_PORT), con_name(i)) for i in range(n_agents)]
-        
-        central_agent = CentralizedAgent(device_addresses, devices, problem.target, problem.c_dev)
-        container.register(central_agent, suggested_aid="central_agent")
-
-        # make proxy agents
-        for i in range(n_agents):
-            a = ProxyAgent(OBS_ADDR, central_agent.addr)
-            container.register(a, suggested_aid=con_name(i))  
-
-        async with activate(container) as c1:
-            await central_agent.dones[0]
-            for done_future in central_agent.dones:
-                await done_future
-
-    asyncio.run(controller_main())
-
-async def run_observer(step_time_s, problem):
-    container = create_tcp_container(addr=(HOST, OBS_PORT), codec=SCENARIO_CODEC)
+    # observer and its container
+    obs_container = create_tcp_container(addr=(HOST, OBS_PORT), codec=SCENARIO_CODEC)
     controller_addresses = [con_addr(i) for i in range(len(problem.devices))]
     # (self, device_addresses, controller_addresses, step_time_s, problem)
     obs = HILObserver(controller_addresses, step_time_s, problem, RNG_SEED)
-    container.register(obs, suggested_aid=OBS_NAME)
+    obs_container.register(obs, suggested_aid=OBS_NAME)
 
-    async with activate(container) as c1:
-        await asyncio.sleep(1)
+    # controllers and their container
+    con_container = create_tcp_container(addr=(HOST, CON_PORT), codec=SCENARIO_CODEC)
+    device_addresses = [OBS_ADDR for i in range(n_agents)]
+    agents = []
+    for i, addr in enumerate(device_addresses):
+        agent = DecentralAgent(addr, devices[i], problem.target, problem.c_dev)
+        con_container.register(agent, suggested_aid=con_name(i))
+        agents.append(agent)
+
+    # set agent topology
+    for i, node in enumerate(per_node(custom_topology(topology))):
+        node.add(agents[i])
+
+
+    async with activate(obs_container, con_container) as c1:
+        await asyncio.gather(obs.start_syncing(), obs.done, *[a.done for a in agents])
         await obs.start_syncing()
         await obs.done
 

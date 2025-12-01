@@ -1,5 +1,5 @@
-from src.sim_environment.devices.abstract import AbstractState
-
+from src.sim_environment.devices.abstract import AbstractDevice, AbstractState
+import logging
 
 # -----------------------------------
 # States

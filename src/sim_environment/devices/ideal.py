@@ -110,12 +110,12 @@ class IdealBatteryState(AbstractState):
         p_min = self.min_power(1)
 
         if self.power > p_max:
-            logging.warning("Battery can not sustain power level: {self.power}. -- Setting to {p_max}")
+            logging.warning(f"Battery can not sustain power level: {self.power}. -- Setting to {p_max}")
             self.power = p_max
             self.soc = 0
             return self.power
         elif self.power < p_min:
-            logging.warning("Battery can not sustain power level: {self.power}. -- Setting to {p_min}")
+            logging.warning(f"Battery can not sustain power level: {self.power}. -- Setting to {p_min}")
             self.power = p_min
             self.soc = 1
             return self.power
