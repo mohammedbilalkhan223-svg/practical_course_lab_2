@@ -196,11 +196,30 @@ Output:
   meaning devices at indices 0,1, and 3 are to be used.
 """
 def UC_solve(devices, target, c_dev):
+    """
+    Unit Commitment (UC) solver: decide which devices to commit (use) for the day-ahead schedule.
+
+    Strategy:
+    - For each device, evaluate whether committing it leads to a lower total cost (selection cost + operating cost + deviation cost).
+    - Use a greedy heuristic: start with no devices committed, then iteratively add the device that provides the largest cost reduction.
+    - Use ED_solve to compute the cost for each candidate set of committed devices.
+    - Stop when adding more devices no longer reduces the total cost.
+
+    This is a heuristic approach to avoid the exponential search over 2^n combinations.
+
+    Args:
+        devices: List of device objects (with .c_op, .c_sel, and .state attributes)
+        target: List of target power values for each time step
+        c_dev: Deviation cost factor (c_dev)
+
+    Returns:
+        List of booleans indicating whether each device is committed (True) or not (False)
+    """
     n_dev = len(devices)
-    counter = 0  # counter for total iterations
+    counter = 0 #counter for total iterations
     best_commitment = None
     best_cost = None
-    i = None  # counter for unchanging iterations
+    i = None #counter for unchanging iterations
     device_types = []
     for d in devices:
         p_span = d.state.p_max - d.state.p_min
@@ -219,7 +238,7 @@ def UC_solve(devices, target, c_dev):
             type = "unknown"
         device_types.append((type, dev.rank_val))  # getting list with type and rank value
 
-    all_combinations = [list(combi) for combi in itertools.product([False, True], repeat=n_dev)]
+    all_combinations = [list(combi) for combi in itertools.product([False,True], repeat = n_dev)]
     all_combinations = [row for row in all_combinations if any(row)]
     costs = [cost for _, cost in device_types]
     type_names = [t for t, _ in device_types]
@@ -234,13 +253,12 @@ def UC_solve(devices, target, c_dev):
         total_pmin = sum(dev.state.p_min for flag, dev in zip(set, devices) if flag)
 
         counts = defaultdict(int)
-        for flag, typ in zip(set, type_names):
+        for flag,typ in zip(set, type_names):
             if flag:
-                counts[typ] += 1
-        amount_vec = tuple(counts[t] for t in
-                           unique_type_names)  # creates "list" with counter of unique type, here unique load, battery,fuel cell -> 3 entries to then
+                counts[typ]+=1
+        amount_vec = tuple(counts[t] for t in unique_type_names) #creates "list" with counter of unique type, here unique load, battery,fuel cell -> 3 entries to then
 
-        if amount_vec not in unique_rows:  # if amount_vec not in unique rows yet -> to only include one of the same combinaiton of devices
+        if amount_vec not in unique_rows: #if amount_vec not in unique rows yet -> to only include one of the same combinaiton of devices
             unique_rows[amount_vec] = {
                 "set": set,  # list of booleans for committed or not
                 "cost_pu": total_cost_pu,  # selection‑cost per unit + operation cost
@@ -254,7 +272,7 @@ def UC_solve(devices, target, c_dev):
                 "total_cost": None,
                 "feasible": None
             }
-    unique_combinations_sorted = sorted(unique_rows.values(), key=lambda x: x["cost_pu"])
+    unique_combinations_sorted = sorted(unique_rows.values(), key = lambda x: x["cost_pu"])
 
     feasible_combinations = []
     for combination in unique_combinations_sorted:
@@ -262,20 +280,20 @@ def UC_solve(devices, target, c_dev):
         pmin = combination["pmin"]
         cost_pu = combination["cost_pu"]
         diff_max = target_pmax - pmax
-        diff_min = target_pmin - pmin  # target_min might be negative, p_min might be negative (in our cases always <=0)
-        if diff_max < 0:  # more p providable in combination
+        diff_min = target_pmin - pmin #target_min might be negative, p_min might be negative (in our cases always <=0)
+        if diff_max < 0: #more p providable in combination
             total_cost_max = target_pmax * cost_pu
             feasible = True
-        elif diff_max >= 0:  # not enough p in combination
+        elif diff_max >= 0: #not enough p in combination
             total_cost_max = pmax * cost_pu + diff_max * c_dev
             feasible = False
-        if diff_min < 0:  # less load in combination than needed
+        if diff_min < 0: #less load in combination than needed
             total_cost_min = pmin * cost_pu + diff_min * c_dev
             feasible = False
-        elif diff_min >= 0:  # more load in combination than needed
+        elif diff_min >= 0: #more load in combination than needed
             total_cost_min = target_pmin * cost_pu
             feasible = True
-        total_cost = abs(total_cost_max) + abs(total_cost_min)  # sum up absolute values for total cost
+        total_cost = abs(total_cost_max) + abs(total_cost_min) #sum up absolute values for total cost
         combination.update(
             {
                 "diff_max": diff_max,
@@ -298,8 +316,7 @@ def UC_solve(devices, target, c_dev):
     feasible_combinations = feasible + cheap_infeasible
     num_feasible = sum(1 for entry in feasible_combinations if entry["feasible"])
     num_infeasible = len(feasible_combinations) - num_feasible
-    feasible_combinations = sorted(feasible_combinations,
-                                   key=lambda x: x["total_cost"])  # sort for total cost to check cheapest ones first
+    feasible_combinations = sorted(feasible_combinations, key = lambda x: x["total_cost"]) #sort for total cost to check cheapest ones first
 
     # going through filtered options
     print("---------------- checking feasible combinations with total length: ", len(feasible_combinations))
@@ -317,7 +334,6 @@ def UC_solve(devices, target, c_dev):
             break
         else:
             i += 1
-    print("best_cost with feasible solutions", best_cost, "with:", best_commitment, "counter was at:", counter_best,
-          "no changes for = ", i, "iterations")
+    print("best_cost with feasible solutions", best_cost, "with:", best_commitment, "counter was at:", counter_best, "no changes for = ", i, "iterations")
     print("counter", counter)
     return best_commitment

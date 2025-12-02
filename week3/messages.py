@@ -81,6 +81,14 @@ SCENARIO_CODEC.add_serializer(*StepReplyMsg.__serializer__())
 
 @json_serializable
 @dataclass
+class StepReplyMsg:
+    state: object
+    costs: list[float]
+
+SCENARIO_CODEC.add_serializer(*StepReplyMsg.__serializer__())
+
+@json_serializable
+@dataclass
 class ResultLogRequestMsg:
     pass
 
@@ -141,3 +149,21 @@ class LeaderFoundMsg:
     agents: dict
 
 SCENARIO_CODEC.add_serializer(*LeaderFoundMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class GetDeviceStateMsg:
+    receiver: str
+    route: int
+
+SCENARIO_CODEC.add_serializer(*GetDeviceStateMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class ReplyDeviceStateMsg:
+    agent_aid = str
+    state: object
+    costs: list[float]
+    receiver: str
+
+SCENARIO_CODEC.add_serializer(*ReplyDeviceStateMsg.__serializer__())
