@@ -11,20 +11,21 @@ class AggregatingAgent(Agent):
         super().__init__()
         self.device_address = device_address #device address of the device agent is sitting on
         self.device = device #device object to access device information
-        self.devices = []
+        self.all_devices = []
         self.target = deepcopy(target)
         self.c_dev = c_dev
 
         # to be set accordingly during the initial scheduling!
-        self.committed = True 
+        self.committed = True
+        self.commited_units = None
         self.device_schedule = [0] * len(target)
 
         # various futures objects for control flow
         self.init_schedule_done = asyncio.Future()
         self.done = asyncio.Future()
         self.state_request_fut = asyncio.Future()
-        self.same_neighbor_amount = asyncio.Future()
-        self.all_replies = asyncio.Future()
+        #self.same_neighbor_amount = asyncio.Future()
+        self.all_replies_arrived = None
 
         # for dumb testing
         self.device_replies = {}
@@ -38,7 +39,7 @@ class AggregatingAgent(Agent):
         self.agent_info = None
         self.agent_routing = None
         self.neighbor_aid = None
-        self.leader_approved = asyncio.Future()
+        self.all_device_schedules = None
 
     def on_register(self):
         pass
@@ -58,10 +59,13 @@ class AggregatingAgent(Agent):
         sender = sender_addr(meta)
 
         if isinstance(content, SetDoneMsg):
+            print(content)
             self.done.set_result(True)
 
         if isinstance(content, TargetUpdateMsg):
-            self.schedule_instant_task(self.handle_target_update(content, meta))
+            #self.schedule_instant_task(self.handle_target_update(content, meta))
+            print("Target update")
+
 
         if isinstance(content, NotifyReadyRequestMsg):
             self.schedule_instant_task(self.handle_ready_request(sender))
@@ -70,16 +74,17 @@ class AggregatingAgent(Agent):
             self.schedule_instant_task(self.handle_state_reply(content))
 
         if isinstance(content, FindLeaderMsg):
-            self.leader_approved = asyncio.Future()
             self.schedule_instant_task(self.handle_leader_selection(content, sender))
 
         if isinstance(content, LeaderFoundMsg):
             self.schedule_instant_task(self.approve_leader_selection(content, sender))
 
-        if isinstance(content, GetDeviceStateMsg):
-            self.schedule_instant_task(self.handle_GetDeviceStateMsg(content, sender))
-        if isinstance(content, ReplyDeviceStateMsg):
-            self.schedule_instant_task(self.handle_ReplyDeviceStateMsg(content, sender))
+        if isinstance(content, GetDeviceInformationMsg):
+            self.schedule_instant_task(self.handle_GetDeviceInformationMsg(content, sender))
+        if isinstance(content, ReplyDeviceInformationMsg):
+            self.schedule_instant_task(self.handle_ReplyDeviceInformationMsg(content, sender))
+        if isinstance(content, SendScheduleMsg):
+            self.schedule_instant_task(self.handle_SendScheduleMsg(content, sender))
 
     async def handle_target_update(self, content, meta):
         self.target[content.t] = content.value
@@ -101,30 +106,46 @@ class AggregatingAgent(Agent):
         received_id = content.leader_id
         if received_id > self.leader_id or self.leader_id == None: #if received larger than saved leader_id
             self.leader = False
-            self.leader_id = received_id
-            self.leader_info_source = sender
-            for neighbor in self.neighbors():
-                msg = FindLeaderMsg(self.leader_id)
-                await self.send_message(msg, neighbor)
+            self.leader_id = received_id #-> set leaderID to received ID and leader=False (agent is not leader)
+            self.leader_info_source = sender #-> save sender of leader for later
+            other_neighbors = [n for n in self.neighbors() if n != sender] #send leader to neighbors that are not the sender
+            msg = FindLeaderMsg(self.leader_id)
+            if other_neighbors:
+                for neighbor in other_neighbors:  # send message only to others, not to sender not notify
+                    await self.send_message(msg, neighbor)
+            else:
+                await self.send_message(msg, sender)
+            #for neighbor in self.neighbors(): #send update to all neighbors
+            #    msg = FindLeaderMsg(self.leader_id)
+            #    await self.send_message(msg, neighbor)
 
         elif received_id < self.leader_id:
-            for neighbor in (other for other in self.neighbors() if other != sender): #send message only to others, not to sender not notify
+            #for neighbor in (other for other in self.neighbors() if other != sender): #send message only to others, not to sender not notify
+            for neighbor in self.neighbors():
                 msg = FindLeaderMsg(self.leader_id)
                 await self.send_message(msg, neighbor)
 
         elif received_id == self.leader_id and received_id != int(self.my_id.split("_")[1]):
             #print(self.my_id, "I also saved this leader, now I notify.", self.leader_info_source)
-            msg = FindLeaderMsg(self.leader_id)
-            await self.send_message(msg, self.leader_info_source)
-        elif received_id == int(self.my_id.split("_")[1]) and received_id == self.leader_id:
-            #print(self.my_id, "I am the leader")
+            if self.leader_info_source is not sender:
+                msg = FindLeaderMsg(self.leader_id)
+                await self.send_message(msg, self.leader_info_source)
+            else:
+                other_neighbors = [n for n in self.neighbors() if n != sender]  # send leader to neighbors that are not the sender
+                msg = FindLeaderMsg(self.leader_id)
+                if other_neighbors:
+                    for neighbor in other_neighbors:  # send message only to others, not to sender not notify
+                        await self.send_message(msg, neighbor)
+                else:
+                    await self.send_message(msg, sender)
+
+        elif received_id == int(self.my_id.split("_")[1]) and received_id == self.leader_id: #i got message that I am the leader
             self.leader = True
             self.leader_aid = self.aid
             agents = {self.aid: self.addr }
             for neighbor in self.neighbors(): #notify everyone around me that I know higher id
                 msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
                 await self.send_message(msg, neighbor)
-                #print(self.my_id, "I send a leader found message to all", neighbor.aid)
 
     async def approve_leader_selection(self, content, sender):
         received_id = content.leader_id
@@ -154,14 +175,10 @@ class AggregatingAgent(Agent):
                     await self.send_message(msg, neighbor)
         else:
             if received_id == int(self.my_id.split("_")[1]):
-                #print(self.my_id, "I am the leader and I stop now")
-                #print("Agent list: ", agents)
                 self.leader = True
                 self.agent_info = agents
-                print(self.aid, "leader aid is: ",  self.leader_aid)
 
             else:
-                #print("my AID is in list but I am not leader")
                 self.agent_info = agents
                 other_neighbors = [n for n in self.neighbors() if n != sender]
                 msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
@@ -172,6 +189,24 @@ class AggregatingAgent(Agent):
                     await self.send_message(msg, sender)
 
 
+    async def handle_SendScheduleMsg(self, content, sender):
+        print(self.aid, content)
+        receiver = content.receiver
+        route = content.route
+
+        if receiver == self.aid:  # reply with ReplyDeviceInformationMsg
+            #print(self.aid, "receiver is aid ", receiver)
+            self.device_schedule = content.schedule
+            #await self.update_device_schedule() #send to observer update device message
+            if not self.init_schedule_done.done():
+                print(self.aid, "set init scheudue done ")
+                self.init_schedule_done.set_result(True)
+
+        else:
+            for neighbor in self.neighbors():
+                if neighbor.aid in route and neighbor.aid != sender.aid:
+                    print(self.aid, "forwarding messeage to", neighbor.aid)
+                    await self.send_message(content, neighbor)
 
 
     async def initialize_leader_selection(self):
@@ -185,7 +220,6 @@ class AggregatingAgent(Agent):
                 #self.leader_id = int(neighbor.aid.split("_")[1])
                 self.leader = False
         if self.leader: #if I am the leader send a message to the neighbors with my id number to compare with others
-            #print("I think I am the leader and now I send a message", self.my_id)
             msg = FindLeaderMsg(self.leader_id)
             for neighbor in self.neighbors(): #send message with highest id to all neighbors
                 await self.send_message(msg, neighbor)
@@ -194,24 +228,21 @@ class AggregatingAgent(Agent):
     async def routing(self):
         parents = {}
         agents = self.agent_info
-        print("agents", agents)
-
         for key, value in agents.items():
-            parents[key] = value.aid  # AgentAddress has .aid
-            # Now: build full paths for every con_X
-        print("parents", parents)
+            parents[key] = value.aid
+            # build full paths for every con_
         full_paths = {}
 
         for node in parents.keys():
             path = []
             current = node
 
-            # Follow parent chain until reaching the leader
+            # Follow parent chain until reaching leader
             while current != self.leader_aid:
                 path.append(current)
                 current = parents[current]  # go to parent aid
 
-            # At the end, reverse to get leader → node path
+            # reverse to get leader → node path
             path.reverse()
             full_paths[node] = path
         self.agent_routing = full_paths
@@ -219,94 +250,83 @@ class AggregatingAgent(Agent):
 
 
     async def update_device_schedule(self):
+        #for updating my own schedule
+        print(self.aid, "update device schedule with ", self.device_schedule)
         msg = SetScheduleMsg(self.device_schedule)
         self.schedule_instant_message(msg, self.device_address)
+        print(self.aid, "done")
         
 
     async def get_device_state(self):
         self.state_request_fut = asyncio.Future()
-
         msg = StateRequestMsg()
         await self.send_message(msg, self.device_address)
         await self.state_request_fut
 
     async def get_device_information(self):
-        #print(self.aid, "now I need to get the device information")
         for agent_aid in self.agent_routing.keys(): #go through all agent_aids and get aid and route to aid
                 receiver = agent_aid #target agent
                 route = self.agent_routing[agent_aid] #gives list with route to target agent
-                msg = GetDeviceStateMsg(receiver, route)
+                msg = GetDeviceInformationMsg(receiver, route)
                 for neighbor in self.neighbors():
                     if receiver == neighbor.aid or neighbor.aid in route:
                         print("send message to ", neighbor.aid, "because: ", receiver, "=", neighbor.aid, "or neighbor in ", route)
                         await self.send_message(msg, neighbor)
-    '''
-    async def reply_GetDeviceStateMsg(self, content, sender):
-        logic: I get a message with receiver and route,
-        I am the receiver, I reply with my state
-        I send the reply to my neighbor self.leader_info_source 
-        await self.device.get_device_state()
-        state = self.device.state
-        cost = [self.device.c_op, self.device.commitment_cost]
-        msg = ReplyDeviceStateMsg(state = state, cost = cost)
-        print(self.leader_id)
-        receiver = self.leader_id
-        await self.send_message(msg, self.leader_info_source)
-    '''
-    async def handle_GetDeviceStateMsg(self, content, sender):
+
+    async def handle_GetDeviceInformationMsg(self, content, sender):
         '''
         logic: I get a message with receiver and route,
         now I check if I am receiver, then I reply with my state,
         if I am not the sender I send it to my neighbor who is in the route list '''
+        print(self.aid, content)
         receiver = content.receiver
         route = content.route
-        if receiver == self.aid: #reply with ReplyDeviceStateMsg
-            #await self.device.get_device_state()
+        #check if message is for me
+        if receiver == self.aid: #reply with ReplyDeviceInformationMsg
+            await self.get_device_state()
             state = self.device.state
             c_op = self.device.c_op
             commitment_cost = self.device.commitment_cost
             leader = self.leader_aid
             agent_aid = self.aid
 
-            msg = ReplyDeviceStateMsg(agent_aid, state, c_op, commitment_cost, leader)
-            #print("I want to send ReplyDeviceStateMsg with receiver: ",  msg, "to ", self.leader_info_source)
+            msg = ReplyDeviceInformationMsg(agent_aid, state, c_op, commitment_cost, leader)
             await self.send_message(msg, self.leader_info_source)
-        else:
+            print(self.aid, "Reply Device Information message sent")
+        else: #forward the message to neighbor in route
             for neighbor in self.neighbors():
                 if neighbor.aid in route and neighbor.aid != sender.aid:
-                    msg = GetDeviceStateMsg(receiver, route)
-                    #print("send message to ", neighbor.aid, "because route ", route)
-                    await self.send_message(msg, neighbor)
+                    await self.send_message(content, neighbor)
 
-    async def handle_ReplyDeviceStateMsg(self, content, sender):
+    async def handle_ReplyDeviceInformationMsg(self, content, sender):
         """logic: I get a message with state, cost, receiver
         If I am receiver and leader, then I need to save the state and the cost for the device in a dict
         If I am not receiver, then I forward message to self.leader_info_source further to direction of leader"""
-        if self.device_replies == {}:
-            agent_aid = self.aid
-            self.device_replies[agent_aid] = {"device": self.device}
-
         receiver = content.receiver
         agent_aid = str(content.agent_aid)
         state = content.state
         c_op = content.c_op
         commitment_cost = content.commitment_cost
-
+        # check if I am receiver and leader
         if receiver == self.aid and self.leader:
             print("I received the state feedback from", agent_aid)
+            # creating device_replies dict with agent aid and device inside
             if agent_aid not in self.device_replies:
-                self.device_replies[agent_aid] = {"device": IdealDevice(state, c_op, commitment_cost)}
-                if len(self.device_replies) == len(self.agent_routing):
-                    if not self.all_replies.done():
-                        self.all_replies.set_result(True)
-                        print(self.my_id, "All replies received , future set")
+                self.device_replies[agent_aid] = {"device": IdealDevice(state, c_op, commitment_cost), "state": state}
+            if self.aid not in self.device_replies: #adding myself if not done yet
+                await self.get_device_state()
+                agent_aid = self.aid
+                state = self.device.state
+                self.device_replies[agent_aid] = {"device": self.device, "state": state}
 
-            print("device_replies", self.device_replies)
+            if len(self.device_replies) == len(self.agent_routing):
+                if not self.all_replies_arrived.done():
+                    self.all_replies_arrived.set_result(True)
+                    print(self.device_replies)
 
         else:
-            msg = ReplyDeviceStateMsg( agent_aid = agent_aid , state = state, c_op = c_op, commitment_cost=commitment_cost, receiver=receiver)
-            print(self.aid, "I forward the message to:", self.leader_info_source)
-            await self.send_message(msg, self.leader_info_source)
+            await self.send_message(content, self.leader_info_source) #forward message to direction of leader
+
 
 
 
@@ -316,28 +336,49 @@ class AggregatingAgent(Agent):
     async def create_initial_schedule(self):
         await asyncio.sleep(3)
         if self.leader == True:
+            print("I am the leader and start routing")
             await self.routing()
-            commited_units = await self.solve_UC_decentral()
-            print("UC solve done")
-            self.device_schedule = await self.solve_ED_decentral(commited_units)
-            self.init_schedule_done.set_result(True)
+            self.commited_units = await self.solve_UC_decentral()
+            self.all_device_schedules = await self.solve_ED_decentral(self.target)
+
+            for i, agent_aid in enumerate(self.device_replies.keys()):  # go through all agent_aids and get aid and route to aid (same dict as devices)
+                print("enumerating", agent_aid, "i is", i)
+                if agent_aid == self.aid:
+                    print("updating leader")
+                    self.device_schedule = self.all_device_schedules[i]
+                    if not self.init_schedule_done.done():
+                        self.init_schedule_done.set_result(True)
+                elif agent_aid != self.aid:
+                    print("sending updating message to ", agent_aid)
+                    receiver = agent_aid  # target agent
+                    route = self.agent_routing[agent_aid]  # gives list with route to target agent
+                    msg = SendScheduleMsg(schedule=self.all_device_schedules[i], route =  route, receiver=receiver)
+                    for neighbor in self.neighbors():
+                        if receiver == neighbor.aid or neighbor.aid in route:
+                            await self.send_message(msg, neighbor)
+
+
+
 
     async def solve_UC_decentral(self):
+        self.all_replies_arrived = asyncio.Future()
         await self.get_device_information()
-        await self.all_replies
-        device_route_dict = {aid: {"route": self.agent_routing[aid],"reply": self.device_replies[aid]} for aid in self.agent_routing.keys() if aid in self.device_replies}
-        print(device_route_dict)
-        self.devices = [entry["reply"]["device"] for entry in device_route_dict.values()]
-        print(self.devices)
-        commited_units = UC_solve(self.devices, self.target, self.c_dev)
+        await self.all_replies_arrived
+        #device_route_dict = {aid: {"route": self.agent_routing[aid],"reply": self.device_replies[aid]} for aid in self.agent_routing.keys() if aid in self.device_replies}
+        #print(device_route_dict)
+        #self.devices = [entry["reply"]["device"] for entry in device_route_dict.values()]
+        self.all_devices = [entry["device"] for entry in self.device_replies.values()]
+        print(self.all_devices)
+        commited_units = UC_solve(self.all_devices, self.target, self.c_dev)
         print(commited_units)
         return commited_units
 
-    async def solve_ED_decentral(self, commited_units):
+    async def solve_ED_decentral(self, target):
         print("starting ED solve")
-        device_schedule, costs = ED_solve(self.devices, commited_units , self.target, self.c_dev)
-        print(device_schedule)
-        return device_schedule
+        print("target ", target)
+        all_device_schedules, costs = ED_solve(self.all_devices, self.commited_units , target, self.c_dev)
+        print(all_device_schedules)
+        return all_device_schedules
 
     """
     Implement your rescheduling logic for the agent here.
@@ -353,7 +394,23 @@ class AggregatingAgent(Agent):
     - [5 + r_5],                t=4
     """
     async def reschedule(self, remaining_target, t):
-        await self.get_device_state()
+        await self.get_device_state() #todo get all updated device states
         new_schedule = await self.solve_ED_decentral(remaining_target)
-        self.device_schedule[t:] = new_schedule
-        await self.update_device_schedule()
+        self.all_device_schedules[t:] = new_schedule
+        print("rescheduling", self.all_device_schedules)
+        for i, agent_aid in enumerate(
+                self.device_replies.keys()):  # go through all agent_aids and get aid and route to aid (same dict as devices)
+            print("enumerating", agent_aid, "i is", i)
+            if agent_aid == self.aid:
+                print("updating leader")
+                self.device_schedule = self.all_device_schedules[i]
+                if not self.init_schedule_done.done():
+                    self.init_schedule_done.set_result(True)
+            elif agent_aid != self.aid:
+                print("sending updating message to ", agent_aid)
+                receiver = agent_aid  # target agent
+                route = self.agent_routing[agent_aid]  # gives list with route to target agent
+                msg = SendScheduleMsg(schedule=self.all_device_schedules[i], route=route, receiver=receiver)
+                for neighbor in self.neighbors():
+                    if receiver == neighbor.aid or neighbor.aid in route:
+                        await self.send_message(msg, neighbor)
