@@ -147,6 +147,8 @@ SCENARIO_CODEC.add_serializer(*FindLeaderMsg.__serializer__())
 class LeaderFoundMsg:
     leader_id: int
     agents: dict
+    leader_aid: str
+
 
 SCENARIO_CODEC.add_serializer(*LeaderFoundMsg.__serializer__())
 
@@ -161,9 +163,10 @@ SCENARIO_CODEC.add_serializer(*GetDeviceStateMsg.__serializer__())
 @json_serializable
 @dataclass
 class ReplyDeviceStateMsg:
-    agent_aid = str
-    state: object
-    costs: list[float]
+    agent_aid : str
+    state: AbstractState
+    c_op: float
+    commitment_cost: float
     receiver: str
 
 SCENARIO_CODEC.add_serializer(*ReplyDeviceStateMsg.__serializer__())

@@ -27,162 +27,258 @@ IdealFuelCellState
 - p_prev 
     (the power value in the time step before the scheduling start)
 """
-
-# import both here to save a headache below
 from src.sim_environment.devices.ideal import *
 
 from src.sim_environment.devices.hil import IdealBatteryState as HILBatteryState
-from src.sim_environment.devices.hil import IdealLoadState as HILLoadState
+from src.sim_environment.devices.hil import IdealLoadState as HILloadstate
 from src.sim_environment.devices.hil import IdealFuelCellState as HILFuelState
 
-from src.sim_environment.optimization_problem import SchedulingProblem
 import logging
 import pyomo.environ as pyo
 from copy import deepcopy
+import itertools
+from collections import defaultdict
 
-#----------------------------------------------
-# convenience functions you will likely need
-#----------------------------------------------
+
 # decide if a device.state object is for a specific kind of device
 def is_battery_state(obj):
     return isinstance(obj, IdealBatteryState) or isinstance(obj, HILBatteryState)
 
+
 def is_load_state(obj):
-    return isinstance(obj, IdealLoadState) or isinstance(obj, HILLoadState)
+    return isinstance(obj, IdealLoadState) or isinstance(obj, HILloadstate)
+
 
 def is_fuel_cell_state(obj):
     return isinstance(obj, IdealFuelCellState) or isinstance(obj, HILFuelState)
 
-# Generic naming functions to set pyomo model variables
-# Add more of these if needed.
-# Example use:
-#
-# c_var = pyo.Var(range(n_steps), domain=pyo.NonNegativeReals, initialize=0)
-# setattr(model, cost_name(5), c_var)
-#
-# This binds a pyomo variable named <cost_5> with content of a pyomo variable
-# <c_var> to the <model> object.
-#
-# You could then subsequently call:
-# model.cost_5 to access it.
-#
-# More likely you will access it via its generic name as well, in this case:
-# getattr(model, cost_name(5))
 
-# intended for power values of a device
+# Generic naming functions to set pyomo model variables
 def power_name(device_number):
     return f"power_{device_number}"
 
-# intended for schedule cost values of a device
+
 def cost_name(device_number):
     return f"cost_{device_number}"
 
-# intended for lists of constraints
-# One possible use is to put all constraints specific to one device
-# into a corresponding constraint list.
-# e.g.
-#
-# const_list = pyo.ConstraintList()
-# setattr(model, const_list_name(device_number), const_list)
-#
+
 def const_list_name(device_number):
     return f"constraints_{device_number}"
 
-#----------------------------------------------
-# Helper function suggestions to structure the program
-# NOTE:
-# - This signatures of these functions are not final.
-#   You can and probably should alter some of them for your implementation.
-#
-# - The purpose of these functions is to structure your parsing of the solver inputs
-#   into the relevant sources of model constraints.
-#
-# - Because the number of devices is variable, you need a generic naming scheme to set
-#   model properties in your pyomo model.
-#----------------------------------------------
+
+# creating model and adding different parts
 def get_pyomo_model(devices, committed_units, target, c_dev):
     # initialize a new pyomo model
     model = pyo.ConcreteModel()
 
-    # add constraints that exist independent of the chosen devices
-    model = add_problem_constraints(model)
-    
-    # add device specific constraints
-    model = add_device_constraints(model, devices, committed_units)
+    # store meta info on the model
+    model._devices = devices
+    model._committed_units = committed_units
+    model._target = list(target) #list of target values
+    model._c_dev = float(c_dev) # deviation cost
+    model._n_steps = len(target) #-> number of timesteps
+    model._n_devices = len(devices) #->device amount
 
+    # sets
+    model.T = pyo.RangeSet(0, model._n_steps - 1)  # power timesteps
+    model.T_state = pyo.RangeSet(0, model._n_steps)  # state timesteps (for E, to enable cyclic behavior)
+    model.devices_idx = pyo.RangeSet(0, model._n_devices - 1)  # device indices 0 to n-1 (total of n devices)
+
+    # classify devices by type
+    load_idx = [i for i, d in enumerate(devices) if is_load_state(d.state)]
+    batt_idx = [i for i, d in enumerate(devices) if is_battery_state(d.state)]
+    fuel_idx = [i for i, d in enumerate(devices) if is_fuel_cell_state(d.state)]
+    model.loads = pyo.Set(initialize=load_idx)
+    model.batteries = pyo.Set(initialize=batt_idx)
+    model.fuelcells = pyo.Set(initialize=fuel_idx)
+
+    # add constraints that exist independent of the chosen devices
+    model = add_problem_constraints(model, batt_idx, fuel_idx)
+    # add device specific constraints
+    model = add_device_constraints(model)
     # add objective function
     model = add_objective_function(model)
 
     return model
 
-def add_problem_constraints(model):
-    pass
 
-def add_device_constraints(model, devices, committed_units):
-    pass
+def add_problem_constraints(model, batt_idx, fuel_idx):
+
+    # variables
+    # P[i,t] Power to be optimizes (positive and/or negative depending on device)
+    model.P = pyo.Var(model.devices_idx, model.T, domain=pyo.Reals)
+
+    # absP[i,t] absolute value of P to calculate operating costs in cost function
+    model.Pabs = pyo.Var(model.devices_idx, model.T, domain=pyo.NonNegativeReals)
+
+    # PDelta[t] deviation between target and optimized power
+    model.PDelta = pyo.Var(model.T, domain=pyo.NonNegativeReals)
+
+    # battery energies E[b,t]
+    if batt_idx:
+        model.E = pyo.Var(model.batteries, model.T_state,
+                          domain=pyo.NonNegativeReals)
+
+    # fuel amounts F[f,t]
+    if fuel_idx:
+        model.F = pyo.Var(model.fuelcells, model.T_state,
+                          domain=pyo.NonNegativeReals)
+
+    # absolute value of operating cost (due to lineraization)
+    def Pabs_upper_rule(m, i, t):
+        return m.Pabs[i, t] >= m.P[i, t]
+
+    def Pabs_lower_rule(m, i, t):
+        return m.Pabs[i, t] >= -m.P[i, t]
+    model.Pabs_upper = pyo.Constraint(model.devices_idx, model.T, rule=Pabs_upper_rule)
+    model.Pabs_lower = pyo.Constraint(model.devices_idx, model.T, rule=Pabs_lower_rule)
+
+    # absolute value of deviation between target and total power at timestep (due to lineraization)
+    def Pdelta_upper_rule(m, t):
+        return m.PDelta[t] >= m._target[t] - sum(m.P[i, t] for i in m.devices_idx)
+
+    def Pdelta_lower_rule(m, t):
+        return m.PDelta[t] >= -(m._target[t] - sum(m.P[i, t] for i in m.devices_idx))
+    model.Pdelta_upper = pyo.Constraint(model.T, rule=Pdelta_upper_rule)
+    model.Pdelta_lower = pyo.Constraint(model.T, rule=Pdelta_lower_rule)
+    return model
+
+
+def add_device_constraints(model):
+    # constraint lists per device
+    model.device_constraints = pyo.ConstraintList()
+
+    for i, dev in enumerate(model._devices):
+        state = dev.state
+        committed = model._committed_units[i]
+
+        if not committed:
+            for t in model.T:
+                model.device_constraints.add(model.P[i, t] == 0.0) #setting not commited device constraint so that P = 0 for not commited devices
+            continue
+
+        # add constraints depending on device type
+        if is_load_state(state):
+            add_load_state_constraints(model, i, state)
+        elif is_battery_state(state):
+            add_battery_state_constraints(model, i, state)
+        elif is_fuel_cell_state(state):
+            add_fuel_cell_state_constraints(model, i, state)
+        else:
+            logging.warning(f"Unknown device type at index {i}, no constraints added.")
+
+    return model
+
 
 def add_objective_function(model):
-    # NOTE: The inputs to this function rely on the model variables
-    # added in the problem and device constraint functions!
-    pass
+    """
+    Objective: minimize sum_t c_dev * D[t]  +  sum_{i,t} c_op_i * U[i,t]
+    """
+    def obj_rule(m):
+        total = 0.0
+        for t in m.T:
+            total += m._c_dev * m.PDelta[t] # deviation cost for deviation between target and optimized value
+        for i, dev in enumerate(m._devices):
+            for t in m.T:
+                total += dev.c_op * m.Pabs[i, t] # operating cost (device specific), going through devices and summing over time
+        for i, dev in enumerate(m._devices):
+            committed = m._committed_units[i]
+            if committed:
+                total += dev.commitment_cost #commitment cost for commited units
+        return total
+    model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
+    return model
 
-def add_load_state_constraints(load_state, model):
-    pass
 
-def add_battery_state_constraints(battery_state, model):
-    pass
+def add_load_state_constraints(model, device_index, load_state):
+    """
+    IdealLoadState:
+    - p_min <= P(i,t) <= p_max (with p_max usually = 0)
+    """
+    for t in model.T:
+        model.device_constraints.add(pyo.inequality(float(load_state.p_min), model.P[device_index, t], float(load_state.p_max)))
 
-def add_fuel_cell_state_constraints(fuel_cell_state, model):
-    pass
-#----------------------------------------------
-#----------------------------------------------
+def add_battery_state_constraints(model, device_index, battery_state):
+    """
+    IdealBatteryState:
+    - P_min <= P(i,t) <= P_max
+    - E(i,0) = size * soc
+    - E(i,T) = size * final_soc
+    - 0 <= E(i,t) <= size
+    - E(i,t+1) = E(i,t) - P(i,t)
+    - E(i,T+1) = E(t=0)
+    """
 
-"""
-Input:
-- devices: List of IdealDevice objects
-- committed_units: List of {True, False} of same length as devices indicating which are to be committed
-- target: the list of target values
-- c_dev: the target difference cost factor
+    for t in model.T:
+        model.device_constraints.add(pyo.inequality(float(battery_state.p_min), model.P[device_index, t], float(battery_state.p_max))) #Power bounds
 
-Output:
-- (power_schedules, schedule_cost)
+    model.device_constraints.add(model.E[device_index, 0] == float(battery_state.size) * float(battery_state.soc)) # initial energy
+    model.device_constraints.add(model.E[device_index, model._n_steps] == float(battery_state.size) * float(battery_state.final_soc))    # final energy (SOC constraint), last value of E is initial value (cyclic behaviour of battery)
+    for t in model.T_state:
+        model.device_constraints.add(model.E[device_index, t] <= float(battery_state.size)) # energy bounds
+        # lower bound 0 is enforced by NonNegativeReals domain
+    for t in range(model._n_steps):
+        model.device_constraints.add(model.E[device_index, t+1] == model.E[device_index, t] - model.P[device_index, t]) # E in next timestep is E current ts - used power in ts
 
-where:
-power_schedules is a list of list of setpoints for each device.
-e.g. for 4 devices and a target length of 5 it could be:
-[
-    [1, 2, 3, 4, 12.4],
-    [0, 0, 0, 0, 0],
-    [1, 2, 3, 4, 5],
-    [-1, -3.5, 0, 0, 0]
-]
+def add_fuel_cell_state_constraints(model, device_index, fuel_cell_state):
+    """
+    IdealfuelcellState:
+    - 0 <= P(i,t) <= p_max
+    - F(i,0) = fuel_amount
+    - F(i,t+1) = F(i,t) - P(i,t)
+    - F(i,t) >= 0 (via NonNegativeReals)
+    - ramp: |P(i,t+1) - P(i,t)| <= change_max
+            |P(i,0) - p_prev| <= change_max
+    """
 
-schedule_cost is the TOTAL cost of the optimization
-- i.e. commitment costs + schedule costs
-"""
+    for t in model.T:
+        model.device_constraints.add(pyo.inequality(float(fuel_cell_state.p_min), model.P[device_index, t], float(fuel_cell_state.p_max))) #adding power bounds
+    model.device_constraints.add(model.F[device_index, 0] == float(fuel_cell_state.fuel_amount)) # initial fuel
+    # dynamics and power bounds
+    for t in range(model._n_steps):
+        # fuel evolution
+        model.device_constraints.add(model.F[device_index, t + 1] == model.F[device_index, t] - model.P[device_index, t]) #Fuel amount in next ts is current fuel amount minus Power used in ts
+        # fuel >= 0 is enforced by NonNegativeReals
+
+    model.device_constraints.add(model.P[device_index, 0] - float(fuel_cell_state.p_prev) <= float(fuel_cell_state.change_max)) # ramp from previous power to first step in absolute value
+    model.device_constraints.add(-(model.P[device_index, 0] - float(fuel_cell_state.p_prev)) <= float(fuel_cell_state.change_max)) #'''
+    if model._n_steps > 1: # ramp between consecutive time steps
+        for t in range(0, model._n_steps - 1):
+            model.device_constraints.add(model.P[device_index, t + 1] - model.P[device_index, t] <= float(fuel_cell_state.change_max))
+            model.device_constraints.add( model.P[device_index, t] - model.P[device_index, t + 1] <= float(fuel_cell_state.change_max))
+
+
 def ED_solve(devices, committed_units, target, c_dev):
-    # TODO implement your solver here
-    # you can define any helper functions you want within this file
-    # The stub functions given here are only a suggestion, you can change
-    # them however you like. Just don't change the interface of the 
-    # ED_solve and UC_solve functions.
-
     # ensure no operation here accidentally alters the device objects
-    # as these are still used outside of this function
     updated_devices = deepcopy(devices)
 
-    # suggested function for parsing the problem into a pyomo model
-    model = get_pyomo_model(updated_devices, committed_units, target, c_dev)    
+    # build pyomo model
+    model = get_pyomo_model(updated_devices, committed_units, target, c_dev)
 
-    # NOTE: commented out because it would error as long as the model is not actually created
-    # pyo.SolverFactory("appsi_highs").solve(model)
+    # solve with HiGHS (appsi interface)
+    solver = pyo.SolverFactory("appsi_highs")
+    result = solver.solve(model, load_solutions=True)
 
-    # TODO: extract the result schedules from the solved model
+    # optional: check solver status
+    if (not hasattr(result, "solver")) or (str(result.solver.termination_condition) != "optimal"):
+        logging.info(f"Solver termination condition: {getattr(result.solver, 'termination_condition', 'Unknown')}")
 
-    power_schedules = [[0] * len(target) for _ in range(len(updated_devices))]
-    schedule_cost = 0
+    n_dev = len(updated_devices)
+    n_steps = len(target)
+
+    # extract schedules [device][t]
+    power_schedules = []
+    for i in range(n_dev):
+        sched = [pyo.value(model.P[i, t]) for t in model.T]
+        # safety: ensure length matches
+        if len(sched) != n_steps:
+            sched = [pyo.value(model.P[i, t]) for t in range(n_steps)]
+        power_schedules.append(sched)
+
+    # schedule_cost: objective value (deviation + operating cost)
+    schedule_cost = pyo.value(model.obj)
+
     return power_schedules, schedule_cost
-
 """
 Input:
 - devices: List of IdealDevice objects
