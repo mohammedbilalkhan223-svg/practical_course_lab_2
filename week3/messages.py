@@ -179,3 +179,20 @@ class SendScheduleMsg:
     receiver: str
 
 SCENARIO_CODEC.add_serializer(*SendScheduleMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class UpdateDeviceInformationMsg:
+    receiver: str
+    route: list[str]
+
+SCENARIO_CODEC.add_serializer(*UpdateDeviceInformationMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class ReplyUpdateDeviceInformationMsg:
+    agent_aid : str
+    state: AbstractState
+    receiver: str
+
+SCENARIO_CODEC.add_serializer(*ReplyUpdateDeviceInformationMsg.__serializer__())

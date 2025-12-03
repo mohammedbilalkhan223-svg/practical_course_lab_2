@@ -28,7 +28,7 @@ def get_test_scenarios():
     c_other = 0.7
     target = [0, 0, 80, 80, 20, 50]
     c_dev = 10
-    max_rel_rand = 0.0
+    max_rel_rand = 0.1
     l = IdealDevice(IdealLoadState(-30), c_load)
     b = IdealDevice(IdealBatteryState(100, 0.0, -20, 20), c_other)
     f = IdealDevice(IdealFuelCellState(100, 20, 10), c_other)
@@ -70,7 +70,7 @@ def get_test_scenarios():
     devices = [l, deepcopy(l),  b, deepcopy(b),  f, deepcopy(f)]
     p3 = deepcopy(SchedulingProblem(target, devices, c_dev, max_rel_rand))
     t3 = nx.watts_strogatz_graph(len(devices), 2, 1)
-    #nx.draw(t2, with_labels=True, font_weight='bold')
+    #nx.draw(t3, with_labels=True, font_weight='bold')
     #plt.draw()
     #plt.show()
     return [(p0, t0), (p1, t1),  (p2, t2),  (p3, t3)]
