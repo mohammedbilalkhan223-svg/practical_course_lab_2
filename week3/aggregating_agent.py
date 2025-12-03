@@ -90,10 +90,13 @@ class AggregatingAgent(Agent):
             self.schedule_instant_task(self.handle_ReplyUpdateDeviceInformationMsg(content, sender))
 
     async def handle_target_update(self, content, meta):
-         if self.leader:
+        if self.leader and self.target[content.t] != content.value:
             self.target[content.t] = content.value
             remaining_target = self.target[content.t:]
             await self.reschedule(remaining_target, content.t)
+        else:
+            print("No update in target")
+
 
     async def handle_ready_request(self, sender):
         await self.init_schedule_done
