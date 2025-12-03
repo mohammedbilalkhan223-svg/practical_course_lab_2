@@ -104,7 +104,7 @@ class CentralizedAgent(Agent):
             target_updated[content.t] = content.value
             remaining_target = target_updated[content.t:]
             msg = StateRequestMsg()
-            self._state_reply_futures = {addr: asyncio.get_event_loop().create_future() for addr in self.device_addresses}
+            self._state_reply_futures = {addr: asyncio.Future() for addr in self.device_addresses}
             for sender in self.device_addresses:
                 await self.send_message(msg, sender)
             await asyncio.gather(*self._state_reply_futures.values()) #waits until all states are updated
