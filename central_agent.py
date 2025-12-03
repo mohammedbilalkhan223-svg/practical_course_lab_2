@@ -158,7 +158,7 @@ class CentralizedAgent(Agent):
             print("updated schedules done")
             await self.updated_schedule_done #updating of schedules is done
 # Wait until the reschedule() function signals completion.
-        self.updated_schedule_done = asyncio.Future()
+        self.updated_schedule_done = asyncio.Future() # same as line 146. This is the preferred way
 # Reset the Future for next update.
         self.state_request_fut = asyncio.Future()
 # Reset state request Future.

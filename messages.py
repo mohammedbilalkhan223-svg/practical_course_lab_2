@@ -81,6 +81,14 @@ SCENARIO_CODEC.add_serializer(*StepReplyMsg.__serializer__())
 
 @json_serializable
 @dataclass
+class StepReplyMsg:
+    state: object
+    costs: list[float]
+
+SCENARIO_CODEC.add_serializer(*StepReplyMsg.__serializer__())
+
+@json_serializable
+@dataclass
 class ResultLogRequestMsg:
     pass
 
@@ -122,3 +130,69 @@ class NotifyReadyMsg:
     pass
 
 SCENARIO_CODEC.add_serializer(*NotifyReadyMsg.__serializer__())
+
+#------------------------------
+# Aggregating Agent
+#------------------------------
+@json_serializable
+@dataclass
+class FindLeaderMsg:
+    leader_id: int
+
+SCENARIO_CODEC.add_serializer(*FindLeaderMsg.__serializer__())
+
+
+@json_serializable
+@dataclass
+class LeaderFoundMsg:
+    leader_id: int
+    agents: dict
+    leader_aid: str
+
+
+SCENARIO_CODEC.add_serializer(*LeaderFoundMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class GetDeviceInformationMsg:
+    receiver: str
+    route: list[str]
+
+SCENARIO_CODEC.add_serializer(*GetDeviceInformationMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class ReplyDeviceInformationMsg:
+    agent_aid : str
+    state: AbstractState
+    c_op: float
+    commitment_cost: float
+    receiver: str
+
+SCENARIO_CODEC.add_serializer(*ReplyDeviceInformationMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class SendScheduleMsg:
+    schedule: list[float]
+    route: list[str]
+    receiver: str
+
+SCENARIO_CODEC.add_serializer(*SendScheduleMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class UpdateDeviceInformationMsg:
+    receiver: str
+    route: list[str]
+
+SCENARIO_CODEC.add_serializer(*UpdateDeviceInformationMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class ReplyUpdateDeviceInformationMsg:
+    agent_aid : str
+    state: AbstractState
+    receiver: str
+
+SCENARIO_CODEC.add_serializer(*ReplyUpdateDeviceInformationMsg.__serializer__())
