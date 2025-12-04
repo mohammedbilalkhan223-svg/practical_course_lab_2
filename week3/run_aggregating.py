@@ -11,7 +11,7 @@ from src.sim_environment.optimization_problem import *
 
 # -------------------
 from aggregating_agent import AggregatingAgent
-from scenarios.decentral_scenarios import get_test_scenarios
+from scenarios.decentral_scenarios_Jens import get_test_scenarios
 from messages import SCENARIO_CODEC, SetDoneMsg
 # -------------------
 
@@ -20,7 +20,7 @@ import os
 import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 2
+SCENARIO_NR = 1
 RNG_SEED = 0
 STEP_TIME_S = 0.2
 if len(sys.argv) > 1:

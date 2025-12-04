@@ -320,8 +320,9 @@ def UC_solve(devices, target, c_dev):
     for d in devices:
         p_span = d.state.p_max - d.state.p_min
         if p_span == 0:
-            return float('inf')
-        d.rank_val = d.commitment_cost / p_span + d.c_op
+            d.rank_val = float('inf')
+        else:
+            d.rank_val = d.commitment_cost / p_span + d.c_op
 
     for dev in devices:
         if is_load_state(dev.state):
@@ -425,8 +426,8 @@ def UC_solve(devices, target, c_dev):
             best_commitment = committed_units
             counter_best = counter
             i = 0
-        elif i > 8:
-            print("No improvement within the last 9 iterations")
+        elif i > len(feasible_combinations)/2:
+            print("No improvement within the last", len(feasible_combinations)/2,"  iterations")
             break
         else:
             i += 1
