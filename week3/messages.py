@@ -198,3 +198,16 @@ class ReplyUpdateDeviceInformationMsg:
     receiver: str
 
 SCENARIO_CODEC.add_serializer(*ReplyUpdateDeviceInformationMsg.__serializer__())
+
+#------------------------------
+# Decentral Agent
+#------------------------------
+@json_serializable
+@dataclass
+class IdentifyAgentsMsg:
+    sender_aid: str
+    agents: dict
+
+SCENARIO_CODEC.add_serializer(*IdentifyAgentsMsg.__serializer__())
+
+
