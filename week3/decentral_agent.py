@@ -37,9 +37,9 @@ class DecentralAgent(Agent):
         self.device_replies = {}
 
         self.counter = 0
-        self.registered_for= []
+        self.registered_for= {}
         self.parent = None
-        self.agent_info = None
+        self.agent_info = {}
         self.agent_routing = None
         self.neighbor_aid = None
         self.all_device_schedules = None
@@ -55,7 +55,6 @@ class DecentralAgent(Agent):
         print(f"{self.aid} neighbors: {self.neighbors()}")
         self.schedule_instant_task(self.identify_agents())
         self.schedule_instant_task(self.routing())
-        #self.schedule_instant_task(self.identify_leader())
         #self.schedule_instant_task(self.create_initial_schedule())
 
     # ------------------------------------
@@ -78,20 +77,37 @@ class DecentralAgent(Agent):
             self.schedule_instant_task(self.handle_state_reply(content))
 
         if isinstance(content, IdentifyAgentsMsg):
-            print(self.aid, content)
-            self.schedule_instant_task(self.handle_identify_agents(content, sender))
+            self.schedule_instant_task(self.handle_identify_agents(content, sender, meta))
 
         if isinstance(content, GetDeviceInformationMsg):
             self.schedule_instant_task(self.handle_GetDeviceInformationMsg(content, sender))
+
         if isinstance(content, ReplyDeviceInformationMsg):
             self.schedule_instant_task(self.handle_ReplyDeviceInformationMsg(content, sender))
+
         if isinstance(content, SendScheduleMsg):
             self.schedule_instant_task(self.handle_SendScheduleMsg(content, sender))
+
         if isinstance(content, UpdateDeviceInformationMsg):
             self.schedule_instant_task(self.handle_update_device_information(content, sender))
+
         if isinstance(content, ReplyUpdateDeviceInformationMsg):
             self.schedule_instant_task(self.handle_ReplyUpdateDeviceInformationMsg(content, sender))
 
+
+    ### Helper function
+    async def forward_msg(self, content, sender):
+        other_neighbors = [n for n in self.neighbors() if n != sender]  # forward message to other neigbors
+        if other_neighbors:
+            for neighbor in other_neighbors:  # send message only to others, not to sender not notify
+                print(self.aid, "forwarding msg to", neighbor)
+                await self.send_message(content, neighbor)
+        else:
+            print(self.aid, "no other neighbors than parent, sending it to parent")
+            await self.send_message(content, sender)  # start sending it back to sender
+
+
+    ### Msg Handling
     async def handle_target_update(self, content, meta):
         if self.leader and self.target[content.t] != content.value:
             self.target[content.t] = content.value
@@ -111,40 +127,38 @@ class DecentralAgent(Agent):
         if not self.state_request_fut.done():
             self.state_request_fut.set_result(True)
 
-    async def handle_identify_agents(self, content, parent):
+    async def handle_identify_agents(self, content, sender, meta):
         '''IDEA:
         every agent sends out message to neighbors which at some point returns (multiple times)
         if I am not sender, I register myself (with my aid and my parent) to the dict and then forward the message
         if I am the original sender, I check if the new agent list has more agents than my already received one '''
-        self.parent = parent
+
         agents = content.agents
-        self.registered_for.append(content.sender_aid) #writing sender_aid to registered_to list
+        original_sender = content.sender_aid
 
-        if self.aid not in agents:  # if I am not in agent list already:
-            agents[self.aid] = self.parent  # add aid and parent to dict
-
-        if not self.identification_forwarded.done():
+        if not original_sender in self.registered_for: #check if already registered to the sender
             if content.sender_aid != self.aid: #check that I was not the original sender
-                other_neighbors = [n for n in self.neighbors() if n != parent]
-                if other_neighbors:
-                    for neighbor in other_neighbors:  # send message only to others, not to sender not notify
-                        await self.send_message(content, neighbor)
+                if self.aid not in agents:  # if I am not in agent list already:
+                    print(self.aid, "registering to agents dict")
+                    agents[self.aid] = {"parent": sender}  # add aid and parent to dict
+                    self.registered_for[original_sender] = {"access_via": sender}  # writing sender_aid to registered_to list
+                    await self.forward_msg(content, sender)
                 else:
-                    await self.send_message(content, parent) #start sending it back to sender
-                self.identification_forwarded.set_result(True)  # setting Future to True
-            elif content.sender_aid == self.aid: #if I am original sender
-                if self.agent_info is None : #if agent info is None
-                    self.agent_info= content.agents #saving the agents
-                else:
-                    # if there are agents yet unkown in received list, append them
-                    for aid, data in content.agents.items():
-                        if aid not in self.agent_info:
-                            self.agent_info[aid] = data
-                    if len(self.agent_info) < len(self.registered_for):
-                        print("I registered to more than I received")
+                    print(self.aid, "something went wrong, I do nto remember registering")
 
-        elif self.identification_forwarded and self.aid in agents:
-            await self.send_message(content, self.parent)  # I already handled this message, I send this message towards my parent and the original sender
+        elif original_sender in self.registered_for: #I already registered once to this agent and forwarded it afterwards
+                print(self.aid, "sending msg to direction of original sender")
+                parent = self.registered_for[original_sender]["access_via"]
+                await self.send_message(content, parent)
+
+        if content.sender_aid == self.aid:  # if I am original sender and don't forward the message anymore
+            print(self.aid, "I got my message back")
+            for aid, data in content.agents.items():  # if there are agents yet unkown in received list, append them
+                if aid not in self.agent_info:
+                    self.agent_info[aid] = data
+            if len(self.agent_info) < len(self.registered_for):
+                print("I registered to more than I received and wait a bit longer")
+            print(self.aid, "the agents I know are:", self.agent_info)
 
 
 
@@ -177,6 +191,7 @@ class DecentralAgent(Agent):
 
     # ------------------------------------
     # ------------------------------------
+    '''
     async def routing(self):
         await asyncio.sleep(6)
         parents = {}
@@ -200,7 +215,7 @@ class DecentralAgent(Agent):
             full_paths[node] = path
         self.agent_routing = full_paths
         print(self.agent_routing)
-
+    '''
     async def update_device_schedule(self):
         # for updating my own schedule
         print(self.aid, "update device schedule with ", self.device_schedule)
@@ -337,28 +352,24 @@ class DecentralAgent(Agent):
     """
     Call your schedule solver here and save the initial schedule.
     """
-
+    async def select_random_start(self, target_length):
+        state = self.device.state
+        print(self.aid, state)
     async def create_initial_schedule(self):
         await asyncio.sleep(6)
-        if self.leader == True:
-            print(self.aid, "I am the leader and start routing")
-            await self.routing()
-            self.commited_units = await self.solve_UC_decentral()
-            self.all_device_schedules = await self.solve_ED_decentral(self.target)
+        target_length = len(self.target)
+        await self.select_random_start(target_length)
 
-            for i, agent_aid in enumerate(
-                    self.device_replies.keys()):  # go through all agent_aids and get aid and route to aid (same dict as devices)
-                if agent_aid == self.aid:
-                    self.device_schedule = self.all_device_schedules[i]
-                    if not self.init_schedule_done.done():
-                        self.init_schedule_done.set_result(True)
-                elif agent_aid != self.aid:
-                    receiver = agent_aid  # target agent
-                    route = self.agent_routing[agent_aid]  # gives list with route to target agent
-                    msg = SendScheduleMsg(schedule=self.all_device_schedules[i], route=route, receiver=receiver)
-                    for neighbor in self.neighbors():
-                        if receiver == neighbor.aid or neighbor.aid in route:
-                            await self.send_message(msg, neighbor)
+        #Todo wait for all scheudles from other agents I know
+        #Todo run ED solve for all initial random schedules & optimize only own one
+        #Todo check if PB changes (initally inf) -> if yes save cost and schedules
+        #Todo when GB changes (initially inf) -> if yes save cost and scheudle and compare with others (send msg and when msg received if new gloabl best != own gloabal best, set new and send to neighbors)
+        #Todo Do PSO to get random deviations of others -> reoptimize own and check for change
+
+        #self.commited_units = await self.solve_UC_decentral()
+        self.all_device_schedules = await self.solve_ED_decentral(self.target)
+
+
 
     async def solve_UC_decentral(self):
         self.all_replies_arrived = asyncio.Future()

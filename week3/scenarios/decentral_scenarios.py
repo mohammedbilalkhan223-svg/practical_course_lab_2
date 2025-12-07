@@ -52,9 +52,9 @@ def get_test_scenarios():
     devices = [l, deepcopy(l), deepcopy(l),deepcopy(l), b, deepcopy(b), deepcopy(b),deepcopy(b), f, deepcopy(f),deepcopy(f), deepcopy(f)]
     p2 = deepcopy(SchedulingProblem(target, devices, c_dev, max_rel_rand))
     t2 = nx.complete_graph(len(devices))
-    nx.draw(t2, with_labels=True, font_weight='bold')
-    plt.draw()
-    plt.show()
+    #nx.draw(t2, with_labels=True, font_weight='bold')
+    #plt.draw()
+    #plt.show()
 
     # -----------------------------------
     # Scenario 3
@@ -70,7 +70,7 @@ def get_test_scenarios():
     devices = [l, deepcopy(l), deepcopy(l),deepcopy(l),  b, deepcopy(b), deepcopy(b) , deepcopy(b),  f, deepcopy(f), deepcopy(f), deepcopy(f)]
     p3 = deepcopy(SchedulingProblem(target, devices, c_dev, max_rel_rand))
     t3 = nx.watts_strogatz_graph(len(devices), 2, 1)
-    nx.draw(t3, with_labels=True, font_weight='bold')
-    plt.draw()
-    plt.show()
+    #nx.draw(t3, with_labels=True, font_weight='bold')
+    #plt.draw()
+    #plt.show()
     return [(p0, t0), (p1, t1),  (p2, t2),  (p3, t3)]
