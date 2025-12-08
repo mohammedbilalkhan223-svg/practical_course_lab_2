@@ -226,13 +226,13 @@ class DecentralAgent(Agent):
     async def handle_NewGlobalBestMsg(self, content, sender):
         if  content.GB_cost < self.GB_cost :
             print(self.aid, f"received GB cost SMALLER than saved {content.GB_cost} < {self.GB_cost}, I update my GB")
-            self.GB_cost = content.GB_cost
+            self.GB_cost = content.GB_cost #setting my global knowledge to received GB
             self.GB_schedules = content.GB_schedules
             await self.forward_msg(content, sender) #forwarding msg
             self.PSO_process = asyncio.Future()
             await self.solve_PSO_decentral()
         elif  content.GB_cost > self.GB_cost :
-            print(self.aid, "received GB LARGER than saved, I send around my GB")
+            print(self.aid, f"received GB LARGER than saved {content.GB_cost} < {self.GB_cost}, I send around my GB")
             msg = NewGlobalBestMsg(self.aid, GB_schedules=self.GB_schedules, GB_cost=self.GB_cost)
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
@@ -247,9 +247,9 @@ class DecentralAgent(Agent):
 
     async def update_device_schedule(self):
         # for updating my own schedule
-        print(self.aid, "update device schedule with ", self.device_schedule)
-        msg = SetScheduleMsg(self.device_schedule)
-        #self.schedule_instant_message(msg, self.device_address)
+        msg = SetScheduleMsg(self.device_schedule[0])
+        print(self.aid, "update device schedule with ", self.device_schedule[0])
+        self.schedule_instant_message(msg, self.device_address)
         print(self.aid, "done")
 
 
@@ -396,10 +396,9 @@ class DecentralAgent(Agent):
             #print(self.aid, self.device.state)
         devices = [self.device]
         num_agents = len(self.agent_info)+1 #+1 because own agent not in list
-        target = [x / num_agents  * np.random.uniform(0.8, 1.2) for x in self.target]
-        print("target", target)
+        agent_target = [x / num_agents  * np.random.uniform(0.8, 1.2) for x in self.target]
         c_dev = self.c_dev
-        init_schedule, init_cost = ED_solve(devices, self.committed, target, c_dev) #to ensure initial schedule meets all constraints we use ED solve
+        init_schedule, init_cost = ED_solve(devices, self.committed, agent_target, c_dev) #to ensure initial schedule meets all constraints we use ED solve
         self.device_schedule = init_schedule
         self.PB_schedules[self.aid] = init_schedule
         self.dev_c_op[self.aid] = self.device.c_op
@@ -467,13 +466,12 @@ class DecentralAgent(Agent):
 
 
     def helper_PSO_cost_fcn(self, schedules):
-        print(self.aid, f"helper_PSO_cost_fcn: {schedules}")
         P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
         P_dev = [abs(P_tot[t] - self.target[t]) for t in range(len(self.target))]
         sum_c_op = sum(sum(abs(P) * self.dev_c_op[aid] for P in schedules[aid][0]) for aid in schedules)
         c_total = (sum(P_dev) * self.c_dev) + sum_c_op
         penalty = self.constraint_cost(schedules)
-        print(self.aid, f"c_total: {c_total}, penalty: {penalty}")
+        #print(self.aid, f"c_total: {c_total}, penalty: {penalty}")
         return c_total+penalty
 
     def PSO_cost_fcn(self, particles):
@@ -482,7 +480,6 @@ class DecentralAgent(Agent):
             schedules = self.GB_schedules
             schedule = particle.tolist()
             schedules[self.aid] = [schedule]
-            print(self.aid, f"PSO_cost_fcn: {schedules}")
             cost = self.helper_PSO_cost_fcn(schedules)
             costs.append(cost)
         return np.array(costs)
@@ -505,7 +502,7 @@ class DecentralAgent(Agent):
     async def solve_PSO_decentral(self):
         print("starting PSO solving")
         bounds = self.add_constraints()
-        n_particles = 50
+        n_particles = 500
         n_dimensions = len(self.target)
         hyp_param = {'c1': 0.5, #cognitiv parameter = how much each particle is influenced by own PB
                      'c2': 0.3, #social parameter = weights how much particle is influences by GB
@@ -514,17 +511,16 @@ class DecentralAgent(Agent):
                                                 dimensions = n_dimensions,
                                                 options = hyp_param,
                                                 bounds = bounds)
-        sugg_PB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 10)
+        sugg_PB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 100) #todo check cost function & agent communication
         best_pos = best_pos.tolist()
         self.PB_schedules[self.aid] = [best_pos]
         cost_from_fcn = self.helper_PSO_cost_fcn(self.PB_schedules)
-        print(self.aid, f"solve_PSO PB schedules: {self.PB_schedules}")
-        print("best cost: ", sugg_PB_cost, "best cost directly from fcn: ", cost_from_fcn)
-        print("best schedule: ", self.PB_schedules)
+        print(self.aid, "best cost: ", sugg_PB_cost, "best cost directly from fcn: ", cost_from_fcn)
+        print(self.aid, "best schedule: ", self.PB_schedules)
         self.PSO_process.set_result(True)
+        await self.update_device_schedule()
         await self.evaluate_schedule(self.PB_schedules)
 
 
-        #new_device_schedule = self.device_schedule #todo create new updated device scheduel here
         #self.device_schedule = new_device_schedule
         #await self.update_device_schedule()
