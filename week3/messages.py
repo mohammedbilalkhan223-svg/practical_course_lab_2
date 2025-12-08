@@ -210,4 +210,22 @@ class IdentifyAgentsMsg:
 
 SCENARIO_CODEC.add_serializer(*IdentifyAgentsMsg.__serializer__())
 
+@json_serializable
+@dataclass
+class NewGlobalBestMsg:
+    sender_aid: str
+    GB_schedules: list[float]
+    GB_cost: float
+
+SCENARIO_CODEC.add_serializer(*NewGlobalBestMsg.__serializer__())
+
+@json_serializable
+@dataclass
+class InitialScheduleMsg:
+    schedule: list[float]
+    c_op: float
+    sender_aid: str
+
+SCENARIO_CODEC.add_serializer(*InitialScheduleMsg.__serializer__())
+
 

@@ -1,10 +1,11 @@
 from mango import Agent, sender_addr
 from src.sim_environment.optimization_problem import SchedulingProblem
 from copy import deepcopy
-from pyomo_solver import ED_solve, UC_solve
+from pyomo_solver import ED_solve, UC_solve, is_battery_state, is_load_state, is_fuel_cell_state
 import asyncio
-
+import numpy as np
 from messages import *
+import pyswarms as ps
 '''Basic idea:
 - every agent gets own routing list and knows type of device
 - every agent creates random initial feasible schedule -> share schedule with others -> everyone optimizes own schedule & shares 
@@ -23,8 +24,7 @@ class DecentralAgent(Agent):
         self.c_dev = c_dev
 
         # to be set accordingly during the initial scheduling!
-        self.committed = True
-        self.commited_units = None
+        self.committed = [True]
         self.device_schedule = [0] * len(target)
 
         # various futures objects for control flow
@@ -35,7 +35,7 @@ class DecentralAgent(Agent):
 
         # for dumb testing
         self.device_replies = {}
-
+        self.own_device_state = None
         self.counter = 0
         self.registered_for= {}
         self.parent = None
@@ -46,6 +46,16 @@ class DecentralAgent(Agent):
         self.state_update_future = asyncio.Future()
         self.get_device_future = asyncio.Future()
         self.identification_forwarded = asyncio.Future()
+        self.schedule_updated = asyncio.Future()
+        self.evaluation_done = asyncio.Future()
+        self.dev_c_op = {}
+        self.PB_schedules = {}
+        self.PB_cost = float('inf')
+        self.GB_schedules = {}
+        self.GB_cost = float('inf')
+        self.proposed_schedules = None
+        self.PSO_process = asyncio.Future()
+        self.initial_evaluation_done = asyncio.Future()
 
     def on_register(self):
         pass
@@ -54,8 +64,7 @@ class DecentralAgent(Agent):
         print(f"{self.aid} at: {self.addr}")
         print(f"{self.aid} neighbors: {self.neighbors()}")
         self.schedule_instant_task(self.identify_agents())
-        self.schedule_instant_task(self.routing())
-        #self.schedule_instant_task(self.create_initial_schedule())
+        self.schedule_instant_task(self.create_initial_schedule())
 
     # ------------------------------------
     # All about message handling
@@ -66,10 +75,10 @@ class DecentralAgent(Agent):
 
         if isinstance(content, SetDoneMsg):
             self.done.set_result(True)
-
+        '''
         if isinstance(content, TargetUpdateMsg):
             self.schedule_instant_task(self.handle_target_update(content, meta))
-
+        '''
         if isinstance(content, NotifyReadyRequestMsg):
             self.schedule_instant_task(self.handle_ready_request(sender))
 
@@ -85,8 +94,8 @@ class DecentralAgent(Agent):
         if isinstance(content, ReplyDeviceInformationMsg):
             self.schedule_instant_task(self.handle_ReplyDeviceInformationMsg(content, sender))
 
-        if isinstance(content, SendScheduleMsg):
-            self.schedule_instant_task(self.handle_SendScheduleMsg(content, sender))
+        if isinstance(content, NewGlobalBestMsg):
+            self.schedule_instant_task(self.handle_NewGlobalBestMsg(content, sender))
 
         if isinstance(content, UpdateDeviceInformationMsg):
             self.schedule_instant_task(self.handle_update_device_information(content, sender))
@@ -94,27 +103,57 @@ class DecentralAgent(Agent):
         if isinstance(content, ReplyUpdateDeviceInformationMsg):
             self.schedule_instant_task(self.handle_ReplyUpdateDeviceInformationMsg(content, sender))
 
+        if isinstance(content, InitialScheduleMsg):
+            self.schedule_instant_task(self.handle_InitialScheduleMsg(content, sender))
+
 
     ### Helper function
     async def forward_msg(self, content, sender):
-        other_neighbors = [n for n in self.neighbors() if n != sender]  # forward message to other neigbors
+        other_neighbors = [n for n in self.neighbors() if n != sender]  # forward message to other neighbors
         if other_neighbors:
             for neighbor in other_neighbors:  # send message only to others, not to sender not notify
-                print(self.aid, "forwarding msg to", neighbor)
+                #print(self.aid, "forwarding msg to", neighbor)
                 await self.send_message(content, neighbor)
         else:
-            print(self.aid, "no other neighbors than parent, sending it to parent")
+            #print(self.aid, "no other neighbors than parent, sending it to parent")
             await self.send_message(content, sender)  # start sending it back to sender
 
+    async def evaluate_schedule(self, schedules):
+        print("evaluation, waiting for PSO")
+        await self.PSO_process
+        self.evaluation_done = asyncio.Future()
+        c_total = await self.cost_fcn(schedules)
+        if c_total <= self.GB_cost:
+            print(self.aid, f"new GB with {self.GB_cost} to {c_total}")
+            self.GB_cost = c_total
+            self.GB_schedules = schedules
+            msg = NewGlobalBestMsg(self.aid, GB_cost=self.GB_cost, GB_schedules=self.GB_schedules)
+            print(self.aid, "Informing neighbors about new GB")
+            for neighbor in self.neighbors():
+                await self.send_message(msg, neighbor)
+        else:
+            print(self.aid, f"no better solution found")
+        print(self.aid, f"setting evaluation done future")
+        self.evaluation_done.set_result(True)
 
+    async def cost_fcn(self, schedules):
+
+        P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
+        P_dev = [abs(P_tot[t] - self.target[t]) for t in range(len(self.target))]
+        sum_c_op = sum(sum(abs(P) * self.dev_c_op[aid] for P in schedules[aid][0]) for aid in schedules)
+        c_total = (sum(P_dev) * self.c_dev) + sum_c_op
+        #print(self.aid, f"c_total {c_total}")
+        return c_total
     ### Msg Handling
+    '''
     async def handle_target_update(self, content, meta):
-        if self.leader and self.target[content.t] != content.value:
+        if self.target[content.t] != content.value:
             self.target[content.t] = content.value
             remaining_target = self.target[content.t:]
-            await self.reschedule(remaining_target, content.t)
+            #await self.reschedule(remaining_target, content.t)
         else:
             print("No update in target")
+            '''
 
     async def handle_ready_request(self, sender):
         await self.init_schedule_done
@@ -139,7 +178,7 @@ class DecentralAgent(Agent):
         if not original_sender in self.registered_for: #check if already registered to the sender
             if content.sender_aid != self.aid: #check that I was not the original sender
                 if self.aid not in agents:  # if I am not in agent list already:
-                    print(self.aid, "registering to agents dict")
+                    #print(self.aid, "registering to agents dict")
                     agents[self.aid] = {"parent": sender}  # add aid and parent to dict
                     self.registered_for[original_sender] = {"access_via": sender}  # writing sender_aid to registered_to list
                     await self.forward_msg(content, sender)
@@ -147,18 +186,31 @@ class DecentralAgent(Agent):
                     print(self.aid, "something went wrong, I do nto remember registering")
 
         elif original_sender in self.registered_for: #I already registered once to this agent and forwarded it afterwards
-                print(self.aid, "sending msg to direction of original sender")
+                #print(self.aid, "sending msg to direction of original sender")
                 parent = self.registered_for[original_sender]["access_via"]
                 await self.send_message(content, parent)
 
         if content.sender_aid == self.aid:  # if I am original sender and don't forward the message anymore
-            print(self.aid, "I got my message back")
+            #print(self.aid, "I got my message back")
             for aid, data in content.agents.items():  # if there are agents yet unkown in received list, append them
                 if aid not in self.agent_info:
                     self.agent_info[aid] = data
             if len(self.agent_info) < len(self.registered_for):
                 print("I registered to more than I received and wait a bit longer")
-            print(self.aid, "the agents I know are:", self.agent_info)
+            print(self.aid, "the agents I know are:", len(self.agent_info), self.agent_info)
+
+    async def handle_InitialScheduleMsg(self, content, sender):
+        self.dev_c_op[content.sender_aid] = content.c_op
+        if content.sender_aid not in self.PB_schedules: #if sender_aid of schedule not in PB scheduels yet
+            self.PB_schedules[content.sender_aid] = content.schedule  # saving received schedule as current PB
+            await self.forward_msg(content, sender) #forward the msg
+            if len(self.PB_schedules) == (len(self.agent_info)+1):
+                #print("Received as many schedueles as I know agents, setting future")
+                print(self.aid, "initial schedules are", self.PB_schedules)
+                self.schedule_updated.set_result(True) #all initial schedules arrived
+                print(self.aid, "schedule updated future set")
+        else:
+            print(self.aid, f"handle_InitialScheduleMSG in else")
 
 
 
@@ -171,64 +223,42 @@ class DecentralAgent(Agent):
             await self.send_message(msg, neighbor)
 
 
-    async def handle_SendScheduleMsg(self, content, sender):
-        print(self.aid, content)
-        receiver = content.receiver
-        route = content.route
-
-        if receiver == self.aid:  # reply with ReplyDeviceInformationMsg
-            self.device_schedule = content.schedule
-            if not self.init_schedule_done.done():
-                self.init_schedule_done.set_result(True)
-            else:
-                await self.update_device_schedule()  # send to observer update device message
-
-        else:
+    async def handle_NewGlobalBestMsg(self, content, sender):
+        if  content.GB_cost < self.GB_cost :
+            print(self.aid, f"received GB cost SMALLER than saved {content.GB_cost} < {self.GB_cost}, I update my GB")
+            self.GB_cost = content.GB_cost
+            self.GB_schedules = content.GB_schedules
+            await self.forward_msg(content, sender) #forwarding msg
+            self.PSO_process = asyncio.Future()
+            await self.solve_PSO_decentral()
+        elif  content.GB_cost > self.GB_cost :
+            print(self.aid, "received GB LARGER than saved, I send around my GB")
+            msg = NewGlobalBestMsg(self.aid, GB_schedules=self.GB_schedules, GB_cost=self.GB_cost)
             for neighbor in self.neighbors():
-                if neighbor.aid in route and neighbor.aid != sender.aid:
-                    await self.send_message(content, neighbor)
+                await self.send_message(msg, neighbor)
+        elif self.GB_cost == content.GB_cost:
+            pass #not doing anything because GB was already received
+        #await self.solve_PSO_decentral()
+
 
 
     # ------------------------------------
     # ------------------------------------
-    '''
-    async def routing(self):
-        await asyncio.sleep(6)
-        parents = {}
-        agents = self.agent_info
-        for key, value in agents.items():
-            parents[key] = value.aid
-            # build full paths for every con_
-        full_paths = {}
 
-        for node in parents.keys():
-            path = []
-            current = node
-
-            # Follow parent chain until reaching leader
-            while current != self.leader_aid:
-                path.append(current)
-                current = parents[current]  # go to parent aid
-
-            # reverse to get leader → node path
-            path.reverse()
-            full_paths[node] = path
-        self.agent_routing = full_paths
-        print(self.agent_routing)
-    '''
     async def update_device_schedule(self):
         # for updating my own schedule
         print(self.aid, "update device schedule with ", self.device_schedule)
         msg = SetScheduleMsg(self.device_schedule)
-        self.schedule_instant_message(msg, self.device_address)
+        #self.schedule_instant_message(msg, self.device_address)
         print(self.aid, "done")
+
 
     async def get_device_state(self):
         self.state_request_fut = asyncio.Future()
         msg = StateRequestMsg()
         await self.send_message(msg, self.device_address)
         await self.state_request_fut
-
+    '''
     async def get_device_information(self):
         for agent_aid in self.agent_routing.keys():  # go through all agent_aids and get aid and route to aid
             self.get_device_future = asyncio.Future()
@@ -269,7 +299,7 @@ class DecentralAgent(Agent):
                     self.state_update_future.set_result(True)
 
             await self.state_update_future
-
+    '''
     async def handle_update_device_information(self, content, sender):
         receiver = content.receiver
         route = content.route
@@ -352,59 +382,149 @@ class DecentralAgent(Agent):
     """
     Call your schedule solver here and save the initial schedule.
     """
-    async def select_random_start(self, target_length):
-        state = self.device.state
-        print(self.aid, state)
+    async def set_starting_schedule(self, target_length):
+        await self.get_device_state()
+        if is_battery_state(self.device.state):
+                self.own_device_state = "Battery"
+                #print(self.aid, self.device.state)
+        elif is_fuel_cell_state(self.device.state):
+                self.own_device_state = "FuelCell"
+                #print(self.aid, self.device.state)
+
+        elif is_load_state(self.device.state):
+            self.own_device_state = "Load"
+            #print(self.aid, self.device.state)
+        devices = [self.device]
+        num_agents = len(self.agent_info)+1 #+1 because own agent not in list
+        target = [x / num_agents  * np.random.uniform(0.8, 1.2) for x in self.target]
+        print("target", target)
+        c_dev = self.c_dev
+        init_schedule, init_cost = ED_solve(devices, self.committed, target, c_dev) #to ensure initial schedule meets all constraints we use ED solve
+        self.device_schedule = init_schedule
+        self.PB_schedules[self.aid] = init_schedule
+        self.dev_c_op[self.aid] = self.device.c_op
+        msg = InitialScheduleMsg(init_schedule, self.dev_c_op[self.aid], sender_aid=self.aid)
+        for neighbor in self.neighbors():
+            await self.send_message(msg, neighbor)
+        self.init_schedule_done.set_result(True)
+        print(self.aid, "waiting for schedule updated future")
+        await self.schedule_updated #wait until all initial schedules arrived
+        print(self.aid, "running PSO")
+        await self.solve_PSO_decentral()
+        #await self.evaluate_schedule(self.PB_schedules) #evaluate initial schedules
+        #self.initial_evaluation_done.set_result(True)
+
+
     async def create_initial_schedule(self):
-        await asyncio.sleep(6)
+        await asyncio.sleep(3)
         target_length = len(self.target)
-        await self.select_random_start(target_length)
+        await self.set_starting_schedule(target_length) #creates bit random but working initial schedule
+        await self.init_schedule_done
 
-        #Todo wait for all scheudles from other agents I know
-        #Todo run ED solve for all initial random schedules & optimize only own one
-        #Todo check if PB changes (initally inf) -> if yes save cost and schedules
-        #Todo when GB changes (initially inf) -> if yes save cost and scheudle and compare with others (send msg and when msg received if new gloabl best != own gloabal best, set new and send to neighbors)
         #Todo Do PSO to get random deviations of others -> reoptimize own and check for change
+    def constraint_cost(self, schedules):
+        constraint_penalty = 0.0
+        penalization = 1e6
+        schedule = schedules[self.aid][0]
+        if self.own_device_state == "Battery":
+            '''- P_min <= P(i, t) <= P_max -> via bounds
+            '''
+            E0 = self.device.state.size * self.device.state.soc #E of device; E(i, 0) = size * soc
+            Et = E0
+            for t, Pt in enumerate(schedule):
+                Et1 = Et-Pt #current energy in each step ; E(i, t + 1) = E(i, t) - P(i, t)
+                if Et < 0 or Et > self.device.state.size: # 0 <= E(i, t) <= size
+                    constraint_penalty += penalization #adding fixed penalization for violation
+                E1t = Et #E from current time step saved for next round as E(t-1) -> important for E_T evaluation in next if ...
+                Et = Et1 #setting current E for next rounds previous
 
-        #self.commited_units = await self.solve_UC_decentral()
-        self.all_device_schedules = await self.solve_ED_decentral(self.target)
+            if E1t != self.device.state.size * self.device.state.final_soc: #E(i, T) = size * final_soc ;
+                constraint_penalty += penalization
+
+            if Et != self.device.state.size * self.device.state.final_soc: #E(i, T + 1) = E(t=0)
+                constraint_penalty += penalization
+
+        elif self.own_device_state == "FuelCell":
+            """    
+            - 0 <= P(i, t) <= p_max -> via bounds 
+            """
+            F0 = self.device.state.fuel_amount #F(i, 0) = fuel_amount
+            Ft = F0
+            P1t = self.device.state.p_prev
+            for t, Pt in enumerate(schedule):
+                Ft1 = Ft - Pt  #F(i, t + 1) = F(i, t) - P(i, t)
+                if Ft < 0 or Ft > self.device.state.fuel_amount: #F(i, t) >= 0 and <= fuel amount
+                    constraint_penalty += penalization
+                if abs(Pt - P1t) > self.device.state.change_max: #first: | P(i, 0) - p_prev | <= change_max; then ramp: | P(i, t + 1) - P(i, t) | <= change_max
+                    constraint_penalty += penalization
+                Ft = Ft1
+                P1t = Pt
+
+        return constraint_penalty
 
 
 
-    async def solve_UC_decentral(self):
-        self.all_replies_arrived = asyncio.Future()
-        await self.get_device_information()
-        await self.all_replies_arrived
-        self.all_devices = [entry["device"] for entry in self.device_replies.values()]
-        print(self.all_devices)
-        commited_units = UC_solve(self.all_devices, self.target, self.c_dev)
-        print(commited_units)
-        return commited_units
 
-    async def solve_ED_decentral(self, target):
-        print("starting ED solve")
-        all_device_schedules, costs = ED_solve(self.all_devices, self.commited_units, target, self.c_dev)
-        print(all_device_schedules)
-        return all_device_schedules
 
-    '''Implement your rescheduling logic for the agent here.'''
+    def helper_PSO_cost_fcn(self, schedules):
+        print(self.aid, f"helper_PSO_cost_fcn: {schedules}")
+        P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
+        P_dev = [abs(P_tot[t] - self.target[t]) for t in range(len(self.target))]
+        sum_c_op = sum(sum(abs(P) * self.dev_c_op[aid] for P in schedules[aid][0]) for aid in schedules)
+        c_total = (sum(P_dev) * self.c_dev) + sum_c_op
+        penalty = self.constraint_cost(schedules)
+        print(self.aid, f"c_total: {c_total}, penalty: {penalty}")
+        return c_total+penalty
 
-    async def reschedule(self, remaining_target, t):
-        await self.update_device_information()
-        new_schedules = await self.solve_ED_decentral(remaining_target)
+    def PSO_cost_fcn(self, particles):
+        costs = []
+        for particle in particles:
+            schedules = self.GB_schedules
+            schedule = particle.tolist()
+            schedules[self.aid] = [schedule]
+            print(self.aid, f"PSO_cost_fcn: {schedules}")
+            cost = self.helper_PSO_cost_fcn(schedules)
+            costs.append(cost)
+        return np.array(costs)
 
-        print("rescheduling", self.all_device_schedules)
-        for i, agent_aid in enumerate(
-                self.device_replies.keys()):  # go through all agent_aids and get aid and route to aid (same dict as devices)
-            self.all_device_schedules[i][t:] = new_schedules[i][:]
-            if agent_aid == self.aid:
-                self.device_schedule = self.all_device_schedules[i]
-                if not self.init_schedule_done.done():
-                    self.init_schedule_done.set_result(True)
-            elif agent_aid != self.aid:
-                receiver = agent_aid  # target agent
-                route = self.agent_routing[agent_aid]  # gives list with route to target agent
-                msg = SendScheduleMsg(schedule=self.all_device_schedules[i], route=route, receiver=receiver)
-                for neighbor in self.neighbors():
-                    if receiver == neighbor.aid or neighbor.aid in route:
-                        await self.send_message(msg, neighbor)
+    def add_constraints(self):
+        if self.own_device_state == "Load":
+            p_min_bounds = np.full(len(self.target), self.device.state.p_min)
+            p_max_bounds = np.full(len(self.target),self.device.state.p_max)
+            bounds = (p_min_bounds, p_max_bounds)
+        elif self.own_device_state == "Battery":
+            p_min_bounds = np.full(len(self.target), self.device.state.p_min)
+            p_max_bounds = np.full(len(self.target), self.device.state.p_max)
+            bounds = (p_min_bounds, p_max_bounds)
+        elif self.own_device_state == "FuelCell":
+            p_min_bounds = np.full(len(self.target), self.device.state.p_min)
+            p_max_bounds = np.full(len(self.target), self.device.state.p_max)
+            bounds = (p_min_bounds, p_max_bounds)
+        return bounds
+
+    async def solve_PSO_decentral(self):
+        print("starting PSO solving")
+        bounds = self.add_constraints()
+        n_particles = 50
+        n_dimensions = len(self.target)
+        hyp_param = {'c1': 0.5, #cognitiv parameter = how much each particle is influenced by own PB
+                     'c2': 0.3, #social parameter = weights how much particle is influences by GB
+                     'w': 0.9} # inertia parameter = particles precious velocity
+        PSO_optimizer = ps.single.GlobalBestPSO(n_particles = n_particles,
+                                                dimensions = n_dimensions,
+                                                options = hyp_param,
+                                                bounds = bounds)
+        sugg_PB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 10)
+        best_pos = best_pos.tolist()
+        self.PB_schedules[self.aid] = [best_pos]
+        cost_from_fcn = self.helper_PSO_cost_fcn(self.PB_schedules)
+        print(self.aid, f"solve_PSO PB schedules: {self.PB_schedules}")
+        print("best cost: ", sugg_PB_cost, "best cost directly from fcn: ", cost_from_fcn)
+        print("best schedule: ", self.PB_schedules)
+        self.PSO_process.set_result(True)
+        await self.evaluate_schedule(self.PB_schedules)
+
+
+        #new_device_schedule = self.device_schedule #todo create new updated device scheduel here
+        #self.device_schedule = new_device_schedule
+        #await self.update_device_schedule()

@@ -11,7 +11,7 @@ from src.sim_environment.optimization_problem import *
 
 # -------------------
 from aggregating_agent import AggregatingAgent
-from scenarios.decentral_scenarios_Jens import get_test_scenarios
+from scenarios.decentral_scenarios import get_test_scenarios
 from messages import SCENARIO_CODEC, SetDoneMsg
 # -------------------
 
