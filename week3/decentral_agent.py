@@ -49,8 +49,6 @@ class DecentralAgent(Agent):
         self.schedule_updated = asyncio.Future()
         self.evaluation_done = asyncio.Future()
         self.dev_c_op = {}
-        self.PB_schedules = {}
-        self.PB_cost = float('inf')
         self.GB_schedules = {}
         self.GB_cost = float('inf')
         self.proposed_schedules = None
@@ -119,10 +117,9 @@ class DecentralAgent(Agent):
             await self.send_message(content, sender)  # start sending it back to sender
 
     async def evaluate_schedule(self, schedules):
-        print("evaluation, waiting for PSO")
-        await self.PSO_process
+        #await self.PSO_process
         self.evaluation_done = asyncio.Future()
-        c_total = await self.cost_fcn(schedules)
+        c_total = await self.cost_fcn(schedules) #calculating cost again bec. no cost for constraint violations
         if c_total <= self.GB_cost:
             print(self.aid, f"new GB with {self.GB_cost} to {c_total}")
             self.GB_cost = c_total
@@ -132,8 +129,7 @@ class DecentralAgent(Agent):
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
         else:
-            print(self.aid, f"no better solution found")
-        print(self.aid, f"setting evaluation done future")
+            print(self.aid, f"no better solution found than old GB cost {self.GB_cost}")
         self.evaluation_done.set_result(True)
 
     async def cost_fcn(self, schedules):
@@ -142,6 +138,7 @@ class DecentralAgent(Agent):
         P_dev = [abs(P_tot[t] - self.target[t]) for t in range(len(self.target))]
         sum_c_op = sum(sum(abs(P) * self.dev_c_op[aid] for P in schedules[aid][0]) for aid in schedules)
         c_total = (sum(P_dev) * self.c_dev) + sum_c_op
+        print(self.aid, f"c_dev: {(sum(P_dev) * self.c_dev)}, c_op: {sum_c_op}")
         #print(self.aid, f"c_total {c_total}")
         return c_total
     ### Msg Handling
@@ -201,14 +198,13 @@ class DecentralAgent(Agent):
 
     async def handle_InitialScheduleMsg(self, content, sender):
         self.dev_c_op[content.sender_aid] = content.c_op
-        if content.sender_aid not in self.PB_schedules: #if sender_aid of schedule not in PB scheduels yet
-            self.PB_schedules[content.sender_aid] = content.schedule  # saving received schedule as current PB
+        if content.sender_aid not in self.GB_schedules: #if sender_aid of schedule not in PB scheduels yet
+            self.GB_schedules[content.sender_aid] = content.schedule  # saving received schedule as current PB
             await self.forward_msg(content, sender) #forward the msg
-            if len(self.PB_schedules) == (len(self.agent_info)+1):
+            if len(self.GB_schedules) == (len(self.agent_info)+1):
                 #print("Received as many schedueles as I know agents, setting future")
-                print(self.aid, "initial schedules are", self.PB_schedules)
                 self.schedule_updated.set_result(True) #all initial schedules arrived
-                print(self.aid, "schedule updated future set")
+                #print(self.aid, "schedule updated future set")
         else:
             print(self.aid, f"handle_InitialScheduleMSG in else")
 
@@ -232,12 +228,12 @@ class DecentralAgent(Agent):
             self.PSO_process = asyncio.Future()
             await self.solve_PSO_decentral()
         elif  content.GB_cost > self.GB_cost :
-            print(self.aid, f"received GB LARGER than saved {content.GB_cost} < {self.GB_cost}, I send around my GB")
+            print(self.aid, f"received GB LARGER than saved {content.GB_cost} > {self.GB_cost}, I send around my GB")
             msg = NewGlobalBestMsg(self.aid, GB_schedules=self.GB_schedules, GB_cost=self.GB_cost)
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
         elif self.GB_cost == content.GB_cost:
-            pass #not doing anything because GB was already received
+            print(self.aid, f"already have received GB: {self.GB_cost} = {content.GB_cost}") #not doing anything because GB was already received
         #await self.solve_PSO_decentral()
 
 
@@ -248,9 +244,9 @@ class DecentralAgent(Agent):
     async def update_device_schedule(self):
         # for updating my own schedule
         msg = SetScheduleMsg(self.device_schedule[0])
-        print(self.aid, "update device schedule with ", self.device_schedule[0])
+        #print(self.aid, "update device schedule with ", self.device_schedule[0])
         self.schedule_instant_message(msg, self.device_address)
-        print(self.aid, "done")
+        #print(self.aid, "done")
 
 
     async def get_device_state(self):
@@ -400,7 +396,7 @@ class DecentralAgent(Agent):
         c_dev = self.c_dev
         init_schedule, init_cost = ED_solve(devices, self.committed, agent_target, c_dev) #to ensure initial schedule meets all constraints we use ED solve
         self.device_schedule = init_schedule
-        self.PB_schedules[self.aid] = init_schedule
+        self.GB_schedules[self.aid] = init_schedule
         self.dev_c_op[self.aid] = self.device.c_op
         msg = InitialScheduleMsg(init_schedule, self.dev_c_op[self.aid], sender_aid=self.aid)
         for neighbor in self.neighbors():
@@ -410,7 +406,6 @@ class DecentralAgent(Agent):
         await self.schedule_updated #wait until all initial schedules arrived
         print(self.aid, "running PSO")
         await self.solve_PSO_decentral()
-        #await self.evaluate_schedule(self.PB_schedules) #evaluate initial schedules
         #self.initial_evaluation_done.set_result(True)
 
 
@@ -461,10 +456,6 @@ class DecentralAgent(Agent):
 
         return constraint_penalty
 
-
-
-
-
     def helper_PSO_cost_fcn(self, schedules):
         P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
         P_dev = [abs(P_tot[t] - self.target[t]) for t in range(len(self.target))]
@@ -478,9 +469,8 @@ class DecentralAgent(Agent):
         costs = []
         for particle in particles:
             schedules = self.GB_schedules
-            schedule = particle.tolist()
-            schedules[self.aid] = [schedule]
-            cost = self.helper_PSO_cost_fcn(schedules)
+            schedules[self.aid] = [particle.tolist()] #replacing own schedule with current position in schedules
+            cost = self.helper_PSO_cost_fcn(schedules) #calculating cost with helper_cost_fcn
             costs.append(cost)
         return np.array(costs)
 
@@ -511,15 +501,16 @@ class DecentralAgent(Agent):
                                                 dimensions = n_dimensions,
                                                 options = hyp_param,
                                                 bounds = bounds)
-        sugg_PB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 100) #todo check cost function & agent communication
+        sugg_GB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 100)
         best_pos = best_pos.tolist()
-        self.PB_schedules[self.aid] = [best_pos]
-        cost_from_fcn = self.helper_PSO_cost_fcn(self.PB_schedules)
-        print(self.aid, "best cost: ", sugg_PB_cost, "best cost directly from fcn: ", cost_from_fcn)
-        print(self.aid, "best schedule: ", self.PB_schedules)
+        print(self.aid, "best pos", best_pos)
+        self.device_schedule = [best_pos]
+        sugg_GB_scheduels = self.GB_schedules
+        sugg_GB_scheduels[self.aid] = [best_pos]
+        print(self.aid, f"best cost {sugg_GB_cost} with best schedule: {sugg_GB_scheduels}")
         self.PSO_process.set_result(True)
         await self.update_device_schedule()
-        await self.evaluate_schedule(self.PB_schedules)
+        await self.evaluate_schedule(sugg_GB_scheduels)
 
 
         #self.device_schedule = new_device_schedule

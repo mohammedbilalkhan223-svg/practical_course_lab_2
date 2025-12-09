@@ -20,7 +20,7 @@ import os
 import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 0
+SCENARIO_NR = 1
 RNG_SEED = 0
 STEP_TIME_S = 0.2
 if len(sys.argv) > 1:
@@ -108,10 +108,12 @@ def plot_results(obs):
     plt.plot(x, schedule_cost_list, label = "target costs")
     plt.plot(x, cumulative_cost, label = "total costs")
     plt.legend()
-    #plt.show()
+    plt.show()
 
     plt.cla()
     plt.plot(x, obs.final_problem.target, label = "target power")
+    plt.plot(x, total_power, label ="total power")
+
     print(f"target: {obs.final_problem.target}")
     for i, schedule in enumerate(device_powers):
         added_string = ""
@@ -126,7 +128,7 @@ def plot_results(obs):
         plt.plot(x, schedule, label = l)
         print(f"schedule: {l} - {schedule}")
     plt.legend()
-    #plt.show()
+    plt.show()
 
 
 if __name__ == "__main__":
