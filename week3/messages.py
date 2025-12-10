@@ -236,4 +236,11 @@ class InitialScheduleMsg:
 
 SCENARIO_CODEC.add_serializer(*InitialScheduleMsg.__serializer__())
 
+@json_serializable
+@dataclass
+class NoUpdateMsg:
+    sender_aid: str
+
+SCENARIO_CODEC.add_serializer(*NoUpdateMsg.__serializer__())
+
 
