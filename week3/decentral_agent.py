@@ -8,6 +8,7 @@ import asyncio
 import numpy as np
 from messages import *
 import pyswarms as ps
+import time
 '''Basic idea:
 - every agent gets own routing list and knows type of device
 - every agent creates random initial feasible schedule -> share schedule with others -> everyone optimizes own schedule & shares 
@@ -64,6 +65,7 @@ class DecentralAgent(Agent):
         self.all_GB_schedules = {}
         self.all_GB_costs = {}
         self.best_schedule_found = asyncio.Future()
+        self.total_schedule_start_time = None
 
     def on_register(self):
         pass
@@ -311,7 +313,11 @@ class DecentralAgent(Agent):
         num_agents = len(self.agent_info)+1 #+1 because own agent not in list
         agent_target = [x / num_agents  * np.random.uniform(0.8, 1.2) for x in self.target]
         c_dev = self.c_dev
+        start_time = time.perf_counter()
         init_schedule, init_cost = ED_solve(devices, self.committed, agent_target, c_dev) #to ensure initial schedule meets all constraints we use ED solve
+        end_time = time.perf_counter()
+        solver_runtime = end_time - start_time
+        print(f"{self.aid} ED_solve runtime: {solver_runtime:.4f} seconds")
         #init_schedule = [0.5 * self.device.state.p_max for _ in range(len(self.target))]
         self.device_schedule = init_schedule
         self.GB_schedules[self.aid] = init_schedule
@@ -329,6 +335,7 @@ class DecentralAgent(Agent):
 
 
     async def create_initial_schedule(self):
+        self.total_schedule_start_time = time.perf_counter()
         await asyncio.sleep(3)
         target_length = len(self.target)
         await self.set_starting_schedule(target_length) #creates bit random but working initial schedule
@@ -339,6 +346,8 @@ class DecentralAgent(Agent):
         await self.update_device_schedule()
         if not self.init_schedule_done.done():
             self.init_schedule_done.set_result(True)
+        total_runtime = time.perf_counter() - self.total_schedule_start_time
+        print(f"{self.aid} Total scheduling runtime: {total_runtime:.4f} seconds")
 
     def constraint_cost(self, schedules):
         constraint_penalty = 0.0
@@ -431,7 +440,11 @@ class DecentralAgent(Agent):
                                                 dimensions = n_dimensions,
                                                 options = hyp_param,
                                                 bounds = bounds)
+        start_time = time.perf_counter()
         sugg_GB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 200)
+        end_time = time.perf_counter()
+        solver_runtime = end_time - start_time
+        print(f"{self.aid} PSO solver runtime (iteration {self.PSO_counter}): {solver_runtime:.4f} seconds")
         best_pos = best_pos.tolist()
         #print(self.aid, "best pos", best_pos)
         self.device_schedule = [best_pos]
