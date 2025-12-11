@@ -105,6 +105,7 @@ class DecentralAgent(Agent):
             await self.send_message(content, sender)  # start sending it back to sender
 
     async def evaluate_schedule(self, schedules):
+        await self.PSO_process
         c_total = await self.cost_fcn(schedules) #calculating cost again bec. no cost for constraint violations
         if c_total <= self.GB_cost:
             self.GB_cost_it.append(c_total) #appending new GB cost
@@ -133,6 +134,7 @@ class DecentralAgent(Agent):
             self.GB_schedules = best_schedule
             self.all_PSO_future = asyncio.Future()
             self.PSO_process = asyncio.Future()
+            print(self.aid, "find_new_GB for ", self.GB_schedules)
             await self.solve_PSO_decentral()
 
     async def cost_fcn(self, schedules):
@@ -197,7 +199,6 @@ class DecentralAgent(Agent):
                     self.agent_info[aid] = data
             if len(self.agent_info) < len(self.registered_for):
                 print("I registered to more than I received and wait a bit longer")
-            print(self.aid, "the agents I know are:", len(self.agent_info), self.agent_info)
             await asyncio.sleep(3)
 
     async def handle_InitialScheduleMsg(self, content, sender):
@@ -231,6 +232,7 @@ class DecentralAgent(Agent):
             if len(self.received_PSO_replies) == len(self.agent_info): #if
                 if not self.all_PSO_future.done():
                     self.all_PSO_future.set_result(True)
+                    print(self.aid, "received all PSO replies, start find new GB ")
                     await self.find_new_GB()
 
         elif content.GB_schedules == self.all_GB_schedules[sender_aid]: #received schedule already in GB schedules for the sender
@@ -243,10 +245,10 @@ class DecentralAgent(Agent):
                 self.all_PSO_future = asyncio.Future()
                 print(self.aid, f"I thought I am done with my {self.GB_cost}, but someone else found cheaper {content.GB_cost}")
                 self.all_GB_schedules[sender_aid] = content.GB_schedules
-                print(self.aid, "updated all GB schedules and now find new GB ")
                 await self.forward_msg(content, sender)
                 if not self.all_PSO_future.done():
                     self.all_PSO_future.set_result(True)
+                    print(self.aid, "start find new GB ")
                     await self.find_new_GB()
             else:
                 await self.forward_msg(content, sender)

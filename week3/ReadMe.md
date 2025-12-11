@@ -40,13 +40,16 @@ doing the process once. By adding a counter for the best schedule found and re-e
 more likely to find the optimum. 
 
 The PSO implementation does not fulfil the requirements for redispatch as it is too slow in finding a common best schedule. 
+To enable redispatch a timelimit for the PSO could be set, accepting not optimal solutions in a faster processing time.
+This is not implemented in the solution yet. 
 
-Sometime, the solver does not converge towards a solution, especially with a large number of agents after the Observer Notification
+
+Sometimes, the solver does not converge towards a solution, especially with a large number of agents after the Observer Notification
 the system does not come to an end. This could be tried to be avoided by only setting the "best schedule found" future to True
 when all agents found no better schedule. This means, another message needs to be implemented saying, that agent... received
 no cost improvement and when all agents sent this message, the future is set to true. Thereby, it is ensured that no optimization process 
 or message still is in the backlog and is received delayed, starting a new process. This message backlog could be the reason 
-why for larger scenarios the process is stuck after the observer communication. 
+why for larger scenarios the process is stuck after the final observer communication. this drawback is not resolved yet. 
 
 4. Learnings 
 
