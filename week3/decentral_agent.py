@@ -117,8 +117,6 @@ class DecentralAgent(Agent):
     async def evaluate_schedule(self, schedules):
         print(self.aid, f"runtime counter {self.PSO_counter}")
         #self.best_schedule_found = asyncio.Future()
-        self.received_PSO_replies = []
-
         #await self.PSO_process #set when PSO process is done
         print(self.aid, "evaluate schedule and PSO Process future is true")
         c_total = await self.cost_fcn(schedules) #calculating cost again bec. no cost for constraint violations
@@ -127,12 +125,12 @@ class DecentralAgent(Agent):
             self.GB_cost_it.append(c_total) #appending new GB cost
             self.all_GB_costs[self.aid] = c_total
             self.all_GB_schedules[self.aid] = schedules
-            msg = NewGlobalBestMsg(self.aid, GB_cost=self.all_GB_costs[self.aid], GB_schedules=self.all_GB_schedules[self.aid])
+            msg = NewGlobalBestMsg(self.aid, GB_cost=self.all_GB_costs[self.aid], GB_schedules=self.all_GB_schedules[self.aid], PSO_iteration= self.PSO_counter)
             print(self.aid, "Informing neighbors about new GB")
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
         elif c_total >= self.GB_cost: #if nothing changed, send that no new GB found
-            msg = NewGlobalBestMsg(self.aid, GB_cost=self.GB_cost, GB_schedules=self.GB_schedules) #just sending old GB values
+            msg = NewGlobalBestMsg(self.aid, GB_cost=self.GB_cost, GB_schedules=self.GB_schedules, PSO_iteration= self.PSO_counter) #just sending old GB values
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
         #await self.find_new_GB()
@@ -149,6 +147,7 @@ class DecentralAgent(Agent):
             print(self.aid, "No cheaper schedule found, I set best schedule found future and see if others send me cheaper schedule")
             if not self.best_schedule_found.done():
                 self.best_schedule_found.set_result(True)
+
         elif float(best_cost) < float(self.GB_cost):
             print(self.aid, "cheaper schedule found, now starting PSO")
             self.GB_cost = best_cost
@@ -251,17 +250,17 @@ class DecentralAgent(Agent):
 
 
     async def handle_NewGlobalBestMsg(self, content, sender):
+        #print(self.aid, "received new global best msg ", content)
         sender_aid = content.sender_aid
-        #print(self.aid, f"sender_aid = {sender_aid}, received_PSO_replies = {self.received_PSO_replies}")
-        #print(self.aid, f"all_GB_schedules = {self.all_GB_schedules}")
+        PSO_iteration = content.PSO_iteration
         if sender_aid not in self.received_PSO_replies:
             self.all_PSO_future = asyncio.Future()
-            self.received_PSO_replies.append(sender_aid)
+            self.received_PSO_replies.append([sender_aid, PSO_iteration])
             self.all_GB_schedules[sender_aid] =  content.GB_schedules
             self.all_GB_costs[sender_aid] = content.GB_cost
             await self.forward_msg(content, sender)
 
-            if len(self.received_PSO_replies) == len(self.agent_info):
+            if len(self.received_PSO_replies) == len(self.agent_info): #if
                 print(self.aid, f"received PSO relies: {self.received_PSO_replies}")
                 print(self.aid, "setting all_PSO_future to done")
                 print(self.aid, f"all_GB_cost: {self.all_GB_costs}")
@@ -270,19 +269,26 @@ class DecentralAgent(Agent):
                     self.all_PSO_future.set_result(True)
                     await self.find_new_GB()
 
-        elif sender_aid in self.received_PSO_replies and content.GB_schedules == self.all_GB_schedules[sender_aid]:
-            pass
+        elif content.GB_schedules == self.all_GB_schedules[sender_aid]: #received schedule already in GB schedules for the sender
+            print(self.aid, "received msg but same GB_schedules, I dont forward this msg")
+            #await self.forward_msg(content, sender)
 
-        elif self.best_schedule_found.done():
-            self.best_schedule_found = asyncio.Future()
-            self.init_schedule_done = asyncio.Future()
-            print(self.aid, f"I thought I am done with my {self.GB_cost}, but someone else found cheaper {content.GB_cost}")
-            self.all_GB_schedules[sender_aid] = content.GB_schedules
-            print(self.aid, "updated all GB schedules and now find new GB ")
-            await self.forward_msg(content, sender)
-            if not self.all_PSO_future.done():
-                self.all_PSO_future.set_result(True)
-            await self.find_new_GB()
+        elif self.best_schedule_found.done(): #Already ended search process because no change happened
+            if content.GB_cost <= self.GB_cost: #received cost smaller than saved one
+                self.best_schedule_found = asyncio.Future()
+                self.init_schedule_done = asyncio.Future()
+                self.all_PSO_future = asyncio.Future()
+                print(self.aid, f"I thought I am done with my {self.GB_cost}, but someone else found cheaper {content.GB_cost}")
+                self.all_GB_schedules[sender_aid] = content.GB_schedules
+                print(self.aid, "updated all GB schedules and now find new GB ")
+                await self.forward_msg(content, sender)
+                if not self.all_PSO_future.done():
+                    self.all_PSO_future.set_result(True)
+                    await self.find_new_GB()
+            else:
+                await self.forward_msg(content, sender)
+        else:
+            print(self.aid, "received msg but received cost higher than my saved ones")
 
         '''elif sender_aid in self.received_PSO_replies and content.GB_schedules != self.all_GB_schedules[sender_aid]:
                 print(self.aid, "received from sender already, but schedules not the same ")
@@ -432,14 +438,14 @@ class DecentralAgent(Agent):
         return bounds
 
     async def solve_PSO_decentral(self):
-        print("---------------------------------------------------starting PSO solving------------------------------------------------------------------------------------")
-
+        print(self.aid, "---------------------------------------------------starting PSO solving------------------------------------------------------------------------------------")
+        self.received_PSO_replies = []
         self.PSO_counter +=1
         bounds = self.add_constraints()
         n_particles = 1000
         n_dimensions = len(self.target)
-        hyp_param = {'c1': 1.7, #cognitiv parameter = how much each particle is influenced by own PB
-                     'c2': 1.5, #social parameter = weights how much particle is influences by GB
+        hyp_param = {'c1': 0.7, #cognitiv parameter = how much each particle is influenced by own PB
+                     'c2': 0.5, #social parameter = weights how much particle is influences by GB
                      'w': 0.1} # inertia parameter = particles precious velocity
         PSO_optimizer = ps.single.GlobalBestPSO(n_particles = n_particles,
                                                 dimensions = n_dimensions,

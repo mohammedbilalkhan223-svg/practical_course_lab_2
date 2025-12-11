@@ -216,16 +216,10 @@ class NewGlobalBestMsg:
     sender_aid: str
     GB_schedules: list[float]
     GB_cost: float
+    PSO_iteration: float
 
 SCENARIO_CODEC.add_serializer(*NewGlobalBestMsg.__serializer__())
-@json_serializable
-@dataclass
-class EnsuringGlobalBestMsg:
-    sender_aid: str
-    GB_schedules: list[float]
-    GB_cost: float
 
-SCENARIO_CODEC.add_serializer(*EnsuringGlobalBestMsg.__serializer__())
 
 @json_serializable
 @dataclass
