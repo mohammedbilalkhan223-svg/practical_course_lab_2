@@ -63,6 +63,7 @@ class DummyHILObserver(Agent):
 
         if isinstance(content, NotifyReadyMsg):
             self.ready_controllers[sender] = True
+            print("Observer", content)
             if all(self.ready_controllers.values()):
                 self.all_controllers_ready.set_result(True)
 

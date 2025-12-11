@@ -1,6 +1,5 @@
 from mango import Agent, sender_addr
 from matplotlib import pyplot as plt
-
 from src.sim_environment.optimization_problem import SchedulingProblem
 from copy import deepcopy
 from pyomo_solver import ED_solve, UC_solve, is_battery_state, is_load_state, is_fuel_cell_state
@@ -36,18 +35,11 @@ class DecentralAgent(Agent):
         self.all_replies_arrived = None
 
         # for dumb testing
-        self.device_replies = {}
         self.own_device_state = None
         self.counter = 0
         self.registered_for= {}
         self.parent = None
         self.agent_info = {}
-        self.agent_routing = None
-        self.neighbor_aid = None
-        self.all_device_schedules = None
-        self.state_update_future = asyncio.Future()
-        self.get_device_future = asyncio.Future()
-        self.identification_forwarded = asyncio.Future()
         self.schedule_updated = asyncio.Future()
         self.evaluation_done = asyncio.Future()
         self.dev_c_op = {}
@@ -108,58 +100,40 @@ class DecentralAgent(Agent):
         other_neighbors = [n for n in self.neighbors() if n != sender]  # forward message to other neighbors
         if other_neighbors:
             for neighbor in other_neighbors:  # send message only to others, not to sender not notify
-                #print(self.aid, "forwarding msg to", neighbor)
                 await self.send_message(content, neighbor)
         else:
-            #print(self.aid, "no other neighbors than parent, sending it to parent")
             await self.send_message(content, sender)  # start sending it back to sender
 
     async def evaluate_schedule(self, schedules):
-        print(self.aid, f"runtime counter {self.PSO_counter}")
-        #self.best_schedule_found = asyncio.Future()
-        #await self.PSO_process #set when PSO process is done
-        print(self.aid, "evaluate schedule and PSO Process future is true")
         c_total = await self.cost_fcn(schedules) #calculating cost again bec. no cost for constraint violations
         if c_total <= self.GB_cost:
-            #print(self.aid, f"new GB with {self.GB_cost} to {c_total}")
             self.GB_cost_it.append(c_total) #appending new GB cost
             self.all_GB_costs[self.aid] = c_total
             self.all_GB_schedules[self.aid] = schedules
             msg = NewGlobalBestMsg(self.aid, GB_cost=self.all_GB_costs[self.aid], GB_schedules=self.all_GB_schedules[self.aid], PSO_iteration= self.PSO_counter)
-            print(self.aid, "Informing neighbors about new GB")
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
         elif c_total >= self.GB_cost: #if nothing changed, send that no new GB found
             msg = NewGlobalBestMsg(self.aid, GB_cost=self.GB_cost, GB_schedules=self.GB_schedules, PSO_iteration= self.PSO_counter) #just sending old GB values
             for neighbor in self.neighbors():
                 await self.send_message(msg, neighbor)
-        #await self.find_new_GB()
-        #self.evaluation_done.set_result(True)
 
     async def find_new_GB(self):
-        print(self.aid, "PSO Process future is true in evaluate_schedule, now we find cheapest schedule")
         best_aid = min(self.all_GB_costs, key=self.all_GB_costs.get)
         best_cost = self.all_GB_costs[best_aid]
         best_schedule = self.all_GB_schedules[best_aid]
-        print(self.aid, f"GB cost {self.GB_cost}")
-        print(self.aid, f"best_cost = {best_cost}, best_schedule = {best_schedule}")
+
         if float(best_cost) >= float(self.GB_cost):
             print(self.aid, "No cheaper schedule found, I set best schedule found future and see if others send me cheaper schedule")
             if not self.best_schedule_found.done():
                 self.best_schedule_found.set_result(True)
 
         elif float(best_cost) < float(self.GB_cost):
-            print(self.aid, "cheaper schedule found, now starting PSO")
             self.GB_cost = best_cost
             self.GB_schedules = best_schedule
             self.all_PSO_future = asyncio.Future()
             self.PSO_process = asyncio.Future()
             await self.solve_PSO_decentral()
-        else:
-            print(self.aid, "unexpected happend ")
-
-        #self.GB_schedules = self.all_GB_schedules
-        #self.GB_cost = self.all_GB_costs
 
     async def cost_fcn(self, schedules):
         P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
@@ -182,10 +156,8 @@ class DecentralAgent(Agent):
     '''
 
     async def handle_ready_request(self, sender):
-        print(self.aid, "heandle_ready_request, waiting for inti schedule done ")
         await self.init_schedule_done
         await self.update_device_schedule()
-        print(self.aid , "handle_Mptofy ReadyMsg")
         msg = NotifyReadyMsg()
         await self.send_message(msg, sender)
 
@@ -245,12 +217,9 @@ class DecentralAgent(Agent):
         agents = {}
         msg = IdentifyAgentsMsg(self.aid, agents=agents) #sending msg with own aid and empty agents list
         for neighbor in self.neighbors():  # send message with highest id to all neighbors
-            print(self.aid, "sending message to: ", neighbor)
             await self.send_message(msg, neighbor)
 
-
     async def handle_NewGlobalBestMsg(self, content, sender):
-        #print(self.aid, "received new global best msg ", content)
         sender_aid = content.sender_aid
         PSO_iteration = content.PSO_iteration
         if sender_aid not in self.received_PSO_replies:
@@ -259,19 +228,13 @@ class DecentralAgent(Agent):
             self.all_GB_schedules[sender_aid] =  content.GB_schedules
             self.all_GB_costs[sender_aid] = content.GB_cost
             await self.forward_msg(content, sender)
-
             if len(self.received_PSO_replies) == len(self.agent_info): #if
-                print(self.aid, f"received PSO relies: {self.received_PSO_replies}")
-                print(self.aid, "setting all_PSO_future to done")
-                print(self.aid, f"all_GB_cost: {self.all_GB_costs}")
-                print(self.aid, f"all_GB_schedules: {self.all_GB_schedules}")
                 if not self.all_PSO_future.done():
                     self.all_PSO_future.set_result(True)
                     await self.find_new_GB()
 
         elif content.GB_schedules == self.all_GB_schedules[sender_aid]: #received schedule already in GB schedules for the sender
-            print(self.aid, "received msg but same GB_schedules, I dont forward this msg")
-            #await self.forward_msg(content, sender)
+            pass
 
         elif self.best_schedule_found.done(): #Already ended search process because no change happened
             if content.GB_cost <= self.GB_cost: #received cost smaller than saved one
@@ -287,16 +250,8 @@ class DecentralAgent(Agent):
                     await self.find_new_GB()
             else:
                 await self.forward_msg(content, sender)
-        else:
-            print(self.aid, "received msg but received cost higher than my saved ones")
-
-        '''elif sender_aid in self.received_PSO_replies and content.GB_schedules != self.all_GB_schedules[sender_aid]:
-                print(self.aid, "received from sender already, but schedules not the same ")
-                print(self.aid, content)
-                pass'''
     # ------------------------------------
     # ------------------------------------
-
     async def update_device_schedule(self):
         # for updating my own schedule
         msg = SetScheduleMsg(self.device_schedule)
@@ -343,20 +298,15 @@ class DecentralAgent(Agent):
         self.PSO_process = asyncio.Future()
         await self.solve_PSO_decentral()
 
-
-
     async def create_initial_schedule(self):
         await asyncio.sleep(3)
         target_length = len(self.target)
         print(self.aid, "creating initial schedule")
         await self.set_starting_schedule(target_length) #creates bit random but working initial schedule
-        print(self.aid, "waiting for best schedule found future ")
         await self.best_schedule_found #wait for PSO to find best schedule
-        print(self.aid, "best schedule found future ")
-        print(self.aid, "device schedule: ", self.GB_schedules[self.aid])
+        print(self.aid, "best schedule found ")
         self.device_schedule = self.GB_schedules[self.aid][0]
-        await self.update_device_schedule()
-        print(self.aid, "setting init_schedule to done ")
+        #await self.update_device_schedule()
         if not self.init_schedule_done.done():
             self.init_schedule_done.set_result(True)
 
@@ -410,7 +360,6 @@ class DecentralAgent(Agent):
         sum_c_op = sum(sum(abs(P) * self.dev_c_op[aid] for P in schedules[aid][0]) for aid in schedules)
         c_total = sum_c_dev + sum_c_op
         penalty = self.constraint_cost(schedules)
-        #print(self.aid, f"c_total: {c_total}, penalty: {penalty}")
         return c_total+penalty
 
     def PSO_cost_fcn(self, particles):
@@ -444,8 +393,8 @@ class DecentralAgent(Agent):
         bounds = self.add_constraints()
         n_particles = 1000
         n_dimensions = len(self.target)
-        hyp_param = {'c1': 0.7, #cognitiv parameter = how much each particle is influenced by own PB
-                     'c2': 0.5, #social parameter = weights how much particle is influences by GB
+        hyp_param = {'c1': 1.7, #cognitiv parameter = how much each particle is influenced by own PB
+                     'c2': 1.5, #social parameter = weights how much particle is influences by GB
                      'w': 0.1} # inertia parameter = particles precious velocity
         PSO_optimizer = ps.single.GlobalBestPSO(n_particles = n_particles,
                                                 dimensions = n_dimensions,
@@ -453,13 +402,11 @@ class DecentralAgent(Agent):
                                                 bounds = bounds)
         sugg_GB_cost, best_pos = PSO_optimizer.optimize(self.PSO_cost_fcn, iters = 200)
         best_pos = best_pos.tolist()
-        #print(self.aid, "best pos", best_pos)
         self.device_schedule = [best_pos]
         sugg_GB_scheduels = self.GB_schedules
         sugg_GB_scheduels[self.aid] = [best_pos]
         self.all_GB_schedules[self.aid] = [best_pos]
         self.all_GB_costs[self.aid] = sugg_GB_cost
-        #print(self.aid, f"best cost {sugg_GB_cost} with best schedule: {sugg_GB_scheduels}")
         if not self.PSO_process.done():
             self.PSO_process.set_result(True)
         await self.evaluate_schedule(sugg_GB_scheduels)
