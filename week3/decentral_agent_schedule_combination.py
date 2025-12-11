@@ -116,10 +116,10 @@ class DecentralAgent(Agent):
 
     async def evaluate_schedule(self, schedules):
         print(self.aid, f"runtime counter {self.PSO_counter}")
-        #self.best_schedule_found = asyncio.Future()
+        self.best_schedule_found = asyncio.Future()
         self.received_PSO_replies = []
-
-        #await self.PSO_process #set when PSO process is done
+        self.all_PSO_future = asyncio.Future()
+        await self.PSO_process #set when PSO process is done
         print(self.aid, "evaluate schedule and PSO Process future is true")
         c_total = await self.cost_fcn(schedules) #calculating cost again bec. no cost for constraint violations
         if c_total <= self.GB_cost:
@@ -127,6 +127,9 @@ class DecentralAgent(Agent):
             self.GB_cost_it.append(c_total) #appending new GB cost
             self.all_GB_costs[self.aid] = c_total
             self.all_GB_schedules[self.aid] = schedules
+            #self.GB_schedules = schedules
+            #self.GB_cost_it.append(c_total)
+            #await self.update_device_schedule()
             msg = NewGlobalBestMsg(self.aid, GB_cost=self.all_GB_costs[self.aid], GB_schedules=self.all_GB_schedules[self.aid])
             print(self.aid, "Informing neighbors about new GB")
             for neighbor in self.neighbors():
@@ -139,25 +142,24 @@ class DecentralAgent(Agent):
         #self.evaluation_done.set_result(True)
 
     async def find_new_GB(self):
+        # evaluating received GB msg
         print(self.aid, "PSO Process future is true in evaluate_schedule, now we find cheapest schedule")
+
         best_aid = min(self.all_GB_costs, key=self.all_GB_costs.get)
         best_cost = self.all_GB_costs[best_aid]
         best_schedule = self.all_GB_schedules[best_aid]
         print(self.aid, f"GB cost {self.GB_cost}")
         print(self.aid, f"best_cost = {best_cost}, best_schedule = {best_schedule}")
         if float(best_cost) >= float(self.GB_cost):
-            print(self.aid, "No cheaper schedule found, I set best schedule found future and see if others send me cheaper schedule")
+            print(self.aid, "No cheaper schedule found")
             if not self.best_schedule_found.done():
                 self.best_schedule_found.set_result(True)
         elif float(best_cost) < float(self.GB_cost):
             print(self.aid, "cheaper schedule found, now starting PSO")
             self.GB_cost = best_cost
             self.GB_schedules = best_schedule
-            self.all_PSO_future = asyncio.Future()
             self.PSO_process = asyncio.Future()
             await self.solve_PSO_decentral()
-        else:
-            print(self.aid, "unexpected happend ")
 
         #self.GB_schedules = self.all_GB_schedules
         #self.GB_cost = self.all_GB_costs
@@ -183,7 +185,6 @@ class DecentralAgent(Agent):
     '''
 
     async def handle_ready_request(self, sender):
-        print(self.aid, "heandle_ready_request, waiting for inti schedule done ")
         await self.init_schedule_done
         await self.update_device_schedule()
         print(self.aid , "handle_Mptofy ReadyMsg")
@@ -235,7 +236,7 @@ class DecentralAgent(Agent):
             self.GB_schedules[content.sender_aid] = content.schedule  # saving received schedule as current PB
             await self.forward_msg(content, sender) #forward the msg
             if len(self.GB_schedules) == (len(self.agent_info)+1):
-                print("Received as many schedueles as I know agents, setting future")
+                #print("Received as many schedueles as I know agents, setting future")
                 self.schedule_updated.set_result(True) #all initial schedules arrived
                 #print(self.aid, "schedule updated future set")
         else:
@@ -270,24 +271,20 @@ class DecentralAgent(Agent):
                     self.all_PSO_future.set_result(True)
                     await self.find_new_GB()
 
-        elif sender_aid in self.received_PSO_replies and content.GB_schedules == self.all_GB_schedules[sender_aid]:
-            pass
-
         elif self.best_schedule_found.done():
             self.best_schedule_found = asyncio.Future()
             self.init_schedule_done = asyncio.Future()
             print(self.aid, f"I thought I am done with my {self.GB_cost}, but someone else found cheaper {content.GB_cost}")
             self.all_GB_schedules[sender_aid] = content.GB_schedules
             print(self.aid, "updated all GB schedules and now find new GB ")
-            await self.forward_msg(content, sender)
-            if not self.all_PSO_future.done():
-                self.all_PSO_future.set_result(True)
             await self.find_new_GB()
+        elif sender_aid in self.received_PSO_replies and content.GB_schedules == self.all_GB_schedules[sender_aid]:
+            pass
+        elif sender_aid in self.received_PSO_replies and content.GB_schedules != self.all_GB_schedules[sender_aid]:
+            pass
 
-        '''elif sender_aid in self.received_PSO_replies and content.GB_schedules != self.all_GB_schedules[sender_aid]:
-                print(self.aid, "received from sender already, but schedules not the same ")
-                print(self.aid, content)
-                pass'''
+
+
     # ------------------------------------
     # ------------------------------------
 
@@ -331,26 +328,23 @@ class DecentralAgent(Agent):
         for neighbor in self.neighbors():
             await self.send_message(msg, neighbor)
         print(self.aid, "waiting for schedule updated future")
-        if not self.schedule_updated.done():
-            await self.schedule_updated #wait until all initial schedules arrived
+        await self.schedule_updated #wait until all initial schedules arrived
         print(self.aid, "running PSO")
         self.PSO_process = asyncio.Future()
-        await self.solve_PSO_decentral()
-
+        await self.solve_PSO_decentral() #start inital PSO
+        #self.init_schedule_done.set_result(True)
+        #self.initial_evaluation_done.set_result(True)
 
 
     async def create_initial_schedule(self):
         await asyncio.sleep(3)
         target_length = len(self.target)
-        print(self.aid, "creating initial schedule")
         await self.set_starting_schedule(target_length) #creates bit random but working initial schedule
-        print(self.aid, "waiting for best schedule found future ")
-        await self.best_schedule_found #wait for PSO to find best schedule
-        print(self.aid, "best schedule found future ")
+        await self.best_schedule_found
+        print(self.aid, "create initial schedule, updating device schedule")
         print(self.aid, "device schedule: ", self.GB_schedules[self.aid])
         self.device_schedule = self.GB_schedules[self.aid][0]
         await self.update_device_schedule()
-        print(self.aid, "setting init_schedule to done ")
         if not self.init_schedule_done.done():
             self.init_schedule_done.set_result(True)
 
@@ -432,7 +426,7 @@ class DecentralAgent(Agent):
         return bounds
 
     async def solve_PSO_decentral(self):
-        print("---------------------------------------------------starting PSO solving------------------------------------------------------------------------------------")
+        print("starting PSO solving")
 
         self.PSO_counter +=1
         bounds = self.add_constraints()
@@ -454,7 +448,6 @@ class DecentralAgent(Agent):
         self.all_GB_schedules[self.aid] = [best_pos]
         self.all_GB_costs[self.aid] = sugg_GB_cost
         #print(self.aid, f"best cost {sugg_GB_cost} with best schedule: {sugg_GB_scheduels}")
-        if not self.PSO_process.done():
-            self.PSO_process.set_result(True)
+        self.PSO_process.set_result(True)
         await self.evaluate_schedule(sugg_GB_scheduels)
 
