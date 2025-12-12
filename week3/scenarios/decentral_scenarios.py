@@ -12,7 +12,7 @@ def get_test_scenarios():
     c_other = 0.7
     target = [30, 20, 10, 0, -10, -20, -30, -40, -50, 0]
     c_dev = 5
-    max_rel_rand = 0.0
+    max_rel_rand = 0.1
     l = IdealDevice(IdealLoadState(-30), c_load)
     b = IdealDevice(IdealBatteryState(100, 0.5, -20, 20), c_other)
     f = IdealDevice(IdealFuelCellState(100, 20, 10), c_other)

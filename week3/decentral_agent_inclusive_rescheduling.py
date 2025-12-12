@@ -56,6 +56,9 @@ class DecentralAgent(Agent):
         self.all_GB_schedules = {}
         self.all_GB_costs = {}
         self.best_schedule_found = asyncio.Future()
+        self.msg_backlog = []
+        self.rescheduling_done = asyncio.Future()
+        self.original_target = deepcopy(target)
 
     def on_register(self):
         pass
@@ -75,10 +78,11 @@ class DecentralAgent(Agent):
 
         if isinstance(content, SetDoneMsg):
             self.done.set_result(True)
-        '''
+
         if isinstance(content, TargetUpdateMsg):
+            print("target update msg")
             self.schedule_instant_task(self.handle_target_update(content, meta))
-        '''
+
         if isinstance(content, NotifyReadyRequestMsg):
             self.schedule_instant_task(self.handle_ready_request(sender))
 
@@ -123,11 +127,17 @@ class DecentralAgent(Agent):
         best_aid = min(self.all_GB_costs, key=self.all_GB_costs.get)
         best_cost = self.all_GB_costs[best_aid]
         best_schedule = self.all_GB_schedules[best_aid]
-
         if float(best_cost) >= float(self.GB_cost):
+            print(self.aid, best_schedule[self.aid][0], self.original_target)
             print(self.aid, "No cheaper schedule found, I set best schedule found future and see if others send me cheaper schedule")
-            if not self.best_schedule_found.done():
-                self.best_schedule_found.set_result(True)
+            if len(best_schedule[self.aid][0]) == len(self.original_target):
+                print(self.aid, "within first optimization")
+                if not self.best_schedule_found.done():
+                    self.best_schedule_found.set_result(True)
+            elif len(best_schedule[self.aid][0]) <= len(self.original_target):
+                print(self.aid, "within rescheduling optimization")
+                if not self.rescheduling_done.done():
+                    self.rescheduling_done.set_result(True)
 
         elif float(best_cost) < float(self.GB_cost):
             self.GB_cost = best_cost
@@ -136,6 +146,8 @@ class DecentralAgent(Agent):
             self.PSO_process = asyncio.Future()
             print(self.aid, "find_new_GB for ", self.GB_schedules)
             await self.solve_PSO_decentral()
+
+
 
     async def cost_fcn(self, schedules):
         P_tot = [sum(schedules[aid][0][t] for aid in schedules) for t in range(len(self.target))]
@@ -146,7 +158,7 @@ class DecentralAgent(Agent):
         return c_total
 
     ### Msg Handling
-    '''
+
     async def handle_target_update(self, content, meta):
         self.best_schedule_found = asyncio.Future()
         if self.target[content.t] != content.value:
@@ -155,7 +167,7 @@ class DecentralAgent(Agent):
             await self.reschedule(remaining_target, content.t)
         else:
             print("No update in target")
-    '''
+
 
     async def handle_ready_request(self, sender):
         await self.init_schedule_done
@@ -223,20 +235,29 @@ class DecentralAgent(Agent):
     async def handle_NewGlobalBestMsg(self, content, sender):
         sender_aid = content.sender_aid
         PSO_iteration = content.PSO_iteration
-        if sender_aid not in self.received_PSO_replies:
-            self.all_PSO_future = asyncio.Future()
-            self.received_PSO_replies.append([sender_aid, PSO_iteration])
-            self.all_GB_schedules[sender_aid] =  content.GB_schedules
-            self.all_GB_costs[sender_aid] = content.GB_cost
-            await self.forward_msg(content, sender)
-            if len(self.received_PSO_replies) == len(self.agent_info): #if
-                if not self.all_PSO_future.done():
-                    self.all_PSO_future.set_result(True)
-                    print(self.aid, "received all PSO replies, start find new GB ")
-                    await self.find_new_GB()
+        if PSO_iteration == self.PSO_counter: #check if this is still in the iteration
+            if sender_aid not in self.received_PSO_replies:
+                self.all_PSO_future = asyncio.Future()
+                self.received_PSO_replies.append([sender_aid, PSO_iteration])
+                self.all_GB_schedules[sender_aid] =  content.GB_schedules
+                self.all_GB_costs[sender_aid] = content.GB_cost
+                await self.forward_msg(content, sender)
+                if len(self.received_PSO_replies) == len(self.agent_info): #if
+                    if not self.all_PSO_future.done():
+                        self.all_PSO_future.set_result(True)
+                        print(self.aid, "received all PSO replies, start find new GB ")
+                        await self.find_new_GB()
 
-        elif content.GB_schedules == self.all_GB_schedules[sender_aid]: #received schedule already in GB schedules for the sender
-            pass
+            elif content.GB_schedules == self.all_GB_schedules[sender_aid]: #received schedule already in GB schedules for the sender
+                pass
+        elif PSO_iteration != self.PSO_counter:
+            if PSO_iteration < self.PSO_counter:
+                pass
+                #print(self.aid, "received an old msg", content)
+            elif PSO_iteration > self.PSO_counter:
+                print(self.aid, "received a msg from coming iteration", content)
+                self.msg_backlog.append(content)
+                print(self.aid, "msg saved to msg_backlog")
 
         elif self.best_schedule_found.done(): #Already ended search process because no change happened
             if content.GB_cost <= self.GB_cost: #received cost smaller than saved one
@@ -245,6 +266,7 @@ class DecentralAgent(Agent):
                 self.all_PSO_future = asyncio.Future()
                 print(self.aid, f"I thought I am done with my {self.GB_cost}, but someone else found cheaper {content.GB_cost}")
                 self.all_GB_schedules[sender_aid] = content.GB_schedules
+                self.PSO_counter = content.PSO_iteration
                 await self.forward_msg(content, sender)
                 if not self.all_PSO_future.done():
                     self.all_PSO_future.set_result(True)
@@ -389,9 +411,9 @@ class DecentralAgent(Agent):
         return bounds
 
     async def solve_PSO_decentral(self):
-        print(self.aid, "---------------------------------------------------starting PSO solving------------------------------------------------------------------------------------")
+        self.PSO_counter += 1
+        print(self.aid, f"---------------------------------------------------starting PSO solving, iteration {self.PSO_counter}------------------------------------------------------------------------------------")
         self.received_PSO_replies = []
-        self.PSO_counter +=1
         bounds = self.add_constraints()
         n_particles = 1000
         n_dimensions = len(self.target)
@@ -412,4 +434,20 @@ class DecentralAgent(Agent):
         if not self.PSO_process.done():
             self.PSO_process.set_result(True)
         await self.evaluate_schedule(sugg_GB_scheduels)
+
+    async def reschedule(self, remaining_target, t):
+        await self.get_device_state()
+        PSO_counter = 0
+        self.target = remaining_target
+        print(self.aid, "running PSO for rescheduling")
+        self.PSO_process = asyncio.Future()
+        await self.solve_PSO_decentral()
+        await self.rescheduling_done
+        updated_target = self.original_target
+        updated_target[t:] = remaining_target
+        self.target = updated_target
+        self.device_schedule[t:] = self.GB_schedules[self.aid][:]
+        await self.update_device_schedule()
+
+
 

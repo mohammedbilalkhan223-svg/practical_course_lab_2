@@ -10,8 +10,8 @@ from src.agent_setups.HIL_observer import DummyHILObserver as HILObserver
 from src.sim_environment.optimization_problem import *
 
 # -------------------
-from decentral_agent import DecentralAgent
-from scenarios.decentral_scenarios_Jens import get_test_scenarios
+from decentral_agent_inclusive_rescheduling import DecentralAgent
+from scenarios.decentral_scenarios import get_test_scenarios
 from messages import SCENARIO_CODEC, SetDoneMsg
 # -------------------
 
@@ -20,7 +20,7 @@ import os
 import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 0
+SCENARIO_NR = 3
 RNG_SEED = 0
 STEP_TIME_S = 0.2
 if len(sys.argv) > 1:

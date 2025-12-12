@@ -6,20 +6,12 @@ import asyncio
 import copy
 import random
 import numpy as np
-from src.sim_environment.optimization_problem import SchedulingProblem
-from messages import (
-    TargetUpdateMsg,
-    SetDoneMsg,
-    NotifyReadyRequestMsg,
-    NotifyReadyMsg,
-    SetScheduleMsg,
-    StateRequestMsg,
-    StateReplyMsg,
-    SetScheduleReplyMsg
-)
+from ..sim_environment.optimization_problem import SchedulingProblem
+from messages import TargetUpdateMsg, SetDoneMsg, NotifyReadyRequestMsg, NotifyReadyMsg, SetScheduleMsg, StateRequestMsg, StateReplyMsg, SetScheduleReplyMsg
+
 import sys
 
-from src.sim_environment.devices.ideal import *
+from ..sim_environment.devices.ideal import *
 import logging
 
 
@@ -63,7 +55,6 @@ class DummyHILObserver(Agent):
 
         if isinstance(content, NotifyReadyMsg):
             self.ready_controllers[sender] = True
-            print("Observer", content)
             if all(self.ready_controllers.values()):
                 self.all_controllers_ready.set_result(True)
 

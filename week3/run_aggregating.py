@@ -20,9 +20,9 @@ import os
 import json
 
 # use cmd scenario number if it exists
-SCENARIO_NR = 1
+SCENARIO_NR = 0
 RNG_SEED = 0
-STEP_TIME_S = 0.2
+STEP_TIME_S = 1
 if len(sys.argv) > 1:
     SCENARIO_NR = int(sys.argv[1])
 
