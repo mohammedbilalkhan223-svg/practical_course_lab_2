@@ -33,14 +33,14 @@ class AggregatingAgent(Agent):
         self.leader = False #set only True for leader
         self.leader_id = None
         self.leader_aid = None
-        self.leader_info_source = None
-        self.leader_info_source_addr = None
+        self.parent = None
         self.agent_info = None
         self.agent_routing = None
         self.neighbor_aid = None
         self.all_device_schedules = None
         self.state_update_future = asyncio.Future()
         self.get_device_future = asyncio.Future()
+        self.leader_approved = asyncio.Future()
 
     def on_register(self):
         pass
@@ -49,6 +49,7 @@ class AggregatingAgent(Agent):
         print(f"{self.aid} at: {self.addr}")
         print(f"{self.aid} neighbors: {self.neighbors()}")
         self.schedule_instant_task(self.initialize_leader_selection())
+        self.schedule_instant_task(self.identify_leader())
         self.schedule_instant_task(self.create_initial_schedule())
 
 
@@ -111,10 +112,11 @@ class AggregatingAgent(Agent):
 
     async def handle_leader_selection(self, content, sender):
         received_id = content.leader_id
+        # if received id is higher than current leader id ->
         if received_id > self.leader_id or self.leader_id == None: #if received larger than saved leader_id
             self.leader = False
             self.leader_id = received_id #-> set leaderID to received ID and leader=False (agent is not leader)
-            self.leader_info_source = sender #-> save sender of leader for later
+            self.parent = sender #-> save sender of leader for later
             other_neighbors = [n for n in self.neighbors() if n != sender] #send leader to neighbors that are not the sender
             msg = FindLeaderMsg(self.leader_id)
             if other_neighbors:
@@ -122,75 +124,59 @@ class AggregatingAgent(Agent):
                     await self.send_message(msg, neighbor)
             else:
                 await self.send_message(msg, sender)
+        else:
+            pass
 
-
-        elif received_id < self.leader_id:
-            #for neighbor in (other for other in self.neighbors() if other != sender): #send message only to others, not to sender not notify
-            for neighbor in self.neighbors():
-                msg = FindLeaderMsg(self.leader_id)
-                await self.send_message(msg, neighbor)
-
-        elif received_id == self.leader_id and received_id != int(self.my_id.split("_")[1]):
-            if self.leader_info_source is not sender:
-                msg = FindLeaderMsg(self.leader_id)
-                await self.send_message(msg, self.leader_info_source)
-            else:
-                other_neighbors = [n for n in self.neighbors() if n != sender]  # send leader to neighbors that are not the sender
-                msg = FindLeaderMsg(self.leader_id)
-                if other_neighbors:
-                    for neighbor in other_neighbors:  # send message only to others, not to sender not notify
-                        await self.send_message(msg, neighbor)
-                else:
-                    await self.send_message(msg, sender)
-
-        elif received_id == int(self.my_id.split("_")[1]) and received_id == self.leader_id: #i got message that I am the leader
+    async def identify_leader(self):
+        await asyncio.sleep(3)
+        if self.leader_id == int(self.aid.split("_")[1]) and self.leader == True:
+            print(self.aid, "I am the leader and start approvement")
             self.leader = True
             self.leader_aid = self.aid
-            agents = {self.aid: self.addr }
-            for neighbor in self.neighbors(): #notify everyone around me that I know higher id
+            agents = {self.aid: self.addr}
+            for neighbor in self.neighbors():  # notify everyone around me that I know higher id
                 msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
                 await self.send_message(msg, neighbor)
+
 
     async def approve_leader_selection(self, content, sender):
         received_id = content.leader_id
         agents = content.agents
         self.leader_aid = content.leader_aid
-        if self.aid not in agents: #if I am not in agent list already:
-            agents[self.aid] = self.leader_info_source
-            #check if received id is my id and I am the leader
-            if received_id == int(self.my_id.split("_")[1]) and received_id == self.leader_id:
-                #print(self.my_id, "I am leader and I know it")
-                self.leader = True
-                self.leader_aid = self.aid
-            # received id already saved as leader and is not my id
-            elif received_id == self.leader_id and received_id != int(self.my_id.split("_")[1]):
-                other_neighbors = [n for n in self.neighbors() if n != sender]
+        if received_id  == self.leader_id: # I saved the same leader and everything is fine
+            #print(self.aid, "approving leader")
+            if self.aid not in agents: #if I am not in agent list already:
+                agents[self.aid] = self.parent #add aid and parent to dict
+                # received id already saved as leader and is not my id
+            if not self.leader_approved.done():    #if future is not set yet/ this leader was not send yet
+                if received_id != int(self.aid.split("_")[1]):
+                    other_neighbors = [n for n in self.neighbors() if n != sender]
+                    msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
+                    if other_neighbors:
+                        for neighbor in other_neighbors:# send message only to others, not to sender not notify
+                            await self.send_message(msg, neighbor)
+                    else:
+                        await self.send_message(msg, sender)
+                    #print(self.aid, "I sent message to other neighbors ")
+                    self.leader_approved.set_result(True) #setting Future to True
+            elif self.leader_approved and self.aid in agents:
+                #print(self.aid, "approved leader already, sending list back to leader")
                 msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
-                if other_neighbors:
-                    for neighbor in other_neighbors:# send message only to others, not to sender not notify
-                        await self.send_message(msg, neighbor)
-                else:
-                    await self.send_message(msg, sender)
+                await self.send_message(msg, self.parent)
 
-            elif received_id < self.leader_id or received_id < int(self.my_id.split("_")[1]):
-                print(self.my_id, "I have a problem with the leader, my suggestion is", self.leader_id)
-                for neighbor in self.neighbors(): #notify everyone around me that I know higher id
-                    msg = FindLeaderMsg(self.leader_id)
-                    await self.send_message(msg, neighbor)
-        else:
-            if received_id == int(self.my_id.split("_")[1]):
+            if received_id == int(self.aid.split("_")[1]): # if I get message back that I am leader
+                #print(self.aid, "I am the leader and got the approval message back ")
                 self.leader = True
                 self.agent_info = agents
+        elif received_id < self.leader_id or received_id < int(self.aid.split("_")[1]):
+            self.leader_approved = asyncio.Future() #resetting future because I got leader that is lower than my leader
+            print(self.aid, "I have a problem with the leader, my suggestion is", self.leader_id)
+            for neighbor in self.neighbors(): #notify everyone around me that I know higher id
+                msg = FindLeaderMsg(self.leader_id)
+                await self.send_message(msg, neighbor)
 
-            else:
-                self.agent_info = agents
-                other_neighbors = [n for n in self.neighbors() if n != sender]
-                msg = LeaderFoundMsg(self.leader_id, agents, self.leader_aid)
-                if other_neighbors:
-                    for neighbor in other_neighbors:  # send message only to others, not to sender not notify
-                        await self.send_message(msg, neighbor)
-                else:
-                    await self.send_message(msg, sender)
+
+
 
 
     async def handle_SendScheduleMsg(self, content, sender):
@@ -208,14 +194,12 @@ class AggregatingAgent(Agent):
         else:
             for neighbor in self.neighbors():
                 if neighbor.aid in route and neighbor.aid != sender.aid:
-                    print(self.aid, "forwarding messeage to", neighbor.aid)
                     await self.send_message(content, neighbor)
 
 
     async def initialize_leader_selection(self):
         #idea: find agent with highest id
-        self.my_id = self.aid
-        self.leader_id = int(self.my_id.split("_")[1])
+        self.leader_id = int(self.aid.split("_")[1])
         for neighbor in self.neighbors():
             if self.leader_id > int(neighbor.aid.split("_")[1]): #check if my id is higher than of my neighbors
                 self.leader = True
@@ -316,7 +300,7 @@ class AggregatingAgent(Agent):
             agent_aid = self.aid
 
             msg = ReplyUpdateDeviceInformationMsg(agent_aid, state, leader)
-            await self.send_message(msg, self.leader_info_source)
+            await self.send_message(msg, self.parent)
 
         else:  # forward the message to neighbor in route
             for neighbor in self.neighbors():
@@ -327,7 +311,7 @@ class AggregatingAgent(Agent):
     async def handle_ReplyUpdateDeviceInformationMsg(self, content, sender):
         """logic: I get a message with state, receiver
         If I am receiver and leader, then I need to update the state and the cost for the device in a dict
-        If I am not receiver, then I forward message to self.leader_info_source further to direction of leader"""
+        If I am not receiver, then I forward message to self.parent further to direction of leader"""
         receiver = content.receiver
         agent_aid = str(content.agent_aid)
 
@@ -338,7 +322,7 @@ class AggregatingAgent(Agent):
                 self.device_replies[agent_aid]["device"].state = content.state
                 self.state_update_future.set_result(True)
         else:
-            await self.send_message(content, self.leader_info_source) #forward message to direction of leader
+            await self.send_message(content, self.parent) #forward message to direction of leader
 
 
     async def handle_GetDeviceInformationMsg(self, content, sender):
@@ -357,7 +341,7 @@ class AggregatingAgent(Agent):
             leader = self.leader_aid
             agent_aid = self.aid
             msg = ReplyDeviceInformationMsg(agent_aid, state, c_op, commitment_cost, leader)
-            await self.send_message(msg, self.leader_info_source)
+            await self.send_message(msg, self.parent)
         else: #forward the message to neighbor in route
             for neighbor in self.neighbors():
                 if neighbor.aid in route and neighbor.aid != sender.aid:
@@ -366,7 +350,7 @@ class AggregatingAgent(Agent):
     async def handle_ReplyDeviceInformationMsg(self, content, sender):
         """logic: I get a message with state, cost, receiver
         If I am receiver and leader, then I need to save the state and the cost for the device in a dict
-        If I am not receiver, then I forward message to self.leader_info_source further to direction of leader"""
+        If I am not receiver, then I forward message to self.parent further to direction of leader"""
         receiver = content.receiver
         agent_aid = str(content.agent_aid)
         state = content.state
@@ -384,14 +368,14 @@ class AggregatingAgent(Agent):
                     self.all_replies_arrived.set_result(True)
                     print(self.device_replies)
         else:
-            await self.send_message(content, self.leader_info_source) #forward message to direction of leader
+            await self.send_message(content, self.parent) #forward message to direction of leader
 
 
     """
     Call your schedule solver here and save the initial schedule.
     """
     async def create_initial_schedule(self):
-        await asyncio.sleep(3)
+        await asyncio.sleep(6)
         if self.leader == True:
             print(self.aid , "I am the leader and start routing")
             await self.routing()

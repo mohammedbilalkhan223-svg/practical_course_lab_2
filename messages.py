@@ -152,6 +152,8 @@ class LeaderFoundMsg:
 
 SCENARIO_CODEC.add_serializer(*LeaderFoundMsg.__serializer__())
 
+
+
 @json_serializable
 @dataclass
 class GetDeviceInformationMsg:
